@@ -1,6 +1,6 @@
 [package]
 name = "adb-vizzard"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 description = "Azure Databricks experiment sweep viewer and comparer"
 authors = ["ADB Vizzard"]
 edition = "2021"
