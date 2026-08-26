@@ -15,7 +15,18 @@ export type MetricKey =
 
 export type Aggregation = "median" | "mean" | "max" | "min";
 
-export type XAxis = "concurrency" | "input_len" | "output_len";
+/**
+ * Curve x axis. Only knobs that trade off against the plotted metric belong
+ * here; input and output length define the workload, so they pick the case
+ * instead (see `CurveCase`).
+ */
+export type XAxis = "concurrency" | "interactivity";
+
+/** One workload, identified by its input and output lengths. */
+export interface CurveCase {
+  inputLen: number;
+  outputLen: number;
+}
 
 export interface AppErrorPayload {
   kind:

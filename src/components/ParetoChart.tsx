@@ -29,8 +29,7 @@ echarts.use([
 
 const X_LABELS: Record<XAxis, string> = {
   concurrency: "max_concurrency",
-  input_len: "random_input_len",
-  output_len: "random_output_len",
+  interactivity: "interactivity — per-user output tok/s (1000 / median TPOT)",
 };
 
 const SERIES_COLORS = ["#22d3ee", "#fbbf24"];
@@ -69,6 +68,11 @@ export interface ParetoChartProps {
   xAxis: XAxis;
   logX: boolean;
   paretoOnly: boolean;
+  /**
+   * Draws a reference line at the interactivity that this per-token latency
+   * implies. Purely a marker: it does not filter or restyle any point.
+   */
+  tpotSlaMs?: number;
 }
 
 export default function ParetoChart({
@@ -77,6 +81,7 @@ export default function ParetoChart({
   xAxis,
   logX,
   paretoOnly,
+  tpotSlaMs,
 }: ParetoChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
@@ -86,6 +91,11 @@ export default function ParetoChart({
   const option = useMemo<echarts.EChartsCoreOption>(() => {
     const axisColor = isDark ? "#94a3b8" : "#475569";
     const splitColor = isDark ? "rgba(148,163,184,0.15)" : "rgba(71,85,105,0.12)";
+
+    // A per-token latency budget is a vertical line only on the interactivity
+    // axis, where x already is 1000 / TPOT.
+    const slaX =
+      xAxis === "interactivity" && tpotSlaMs && tpotSlaMs > 0 ? 1000 / tpotSlaMs : null;
 
     return {
       animationDuration: 220,
@@ -118,6 +128,12 @@ export default function ParetoChart({
             `<div style="opacity:.75">${escapeHtml(seriesName)}</div>`,
             `<div style="margin-top:3px">${METRIC_LABELS[metric]}: <b>${formatValue(value)}</b></div>`,
           ];
+          if (xAxis === "interactivity") {
+            const interactivity = point.value[0];
+            rows.push(
+              `<div>per-user: <b>${formatValue(interactivity)}</b> tok/s (TPOT ${formatValue(1000 / interactivity)} ms)</div>`,
+            );
+          }
           if (runCount > 1) {
             rows.push(`<div style="opacity:.6">median of ${runCount} runs</div>`);
           }
@@ -155,6 +171,24 @@ export default function ParetoChart({
       ],
       series: series.flatMap((entry, index) => {
         const color = SERIES_COLORS[index % SERIES_COLORS.length];
+        // One line owns the SLA marker; repeating it per series would stack
+        // identical labels on top of each other. The option is merged rather
+        // than replaced, so an empty data array is how the line goes away.
+        const showMark = index === 0 && slaX !== null && tpotSlaMs !== undefined;
+        const markLine = {
+          silent: true,
+          symbol: "none" as const,
+          label: {
+            formatter: showMark
+              ? `TPOT ≤ ${formatValue(tpotSlaMs)} ms\n(${formatValue(slaX)} tok/s/user)`
+              : "",
+            color: axisColor,
+            fontSize: 10,
+            position: "insideEndTop" as const,
+          },
+          lineStyle: { color: axisColor, type: "dashed" as const, width: 1 },
+          data: showMark ? [{ xAxis: slaX }] : [],
+        };
         const points = paretoOnly
           ? entry.points.filter((point) => point.is_pareto)
           : entry.points;
@@ -180,6 +214,7 @@ export default function ParetoChart({
           emphasis: { scale: 1.6 },
           itemStyle: { color },
           lineStyle: { color, width: 2 },
+          markLine,
           data: points.map(toPayload),
         };
 
@@ -208,7 +243,7 @@ export default function ParetoChart({
         ];
       }),
     };
-  }, [series, metric, xAxis, logX, paretoOnly, isDark]);
+  }, [series, metric, xAxis, logX, paretoOnly, tpotSlaMs, isDark]);
 
   useEffect(() => {
     if (!containerRef.current) return;

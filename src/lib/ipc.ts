@@ -13,6 +13,7 @@ import type {
   CacheStats,
   ComparisonTable,
   ConnectionInfo,
+  CurveCase,
   CurveSeries,
   ExportKind,
   ExportOptions,
@@ -97,9 +98,16 @@ export async function buildCurves(args: {
   metric: MetricKey;
   xAxis: XAxis;
   aggregation: Aggregation;
+  case?: CurveCase | null;
 }): Promise<CurveSeries[]> {
   return invoke("build_curves", {
-    args: { metric: args.metric, x_axis: args.xAxis, aggregation: args.aggregation },
+    args: {
+      metric: args.metric,
+      x_axis: args.xAxis,
+      aggregation: args.aggregation,
+      input_len: args.case?.inputLen ?? null,
+      output_len: args.case?.outputLen ?? null,
+    },
   });
 }
 

@@ -83,6 +83,25 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Sticky headers must be fully opaque or scrolled rows show through them, so
+     the accent tint is painted as a layer over the raised colour rather than
+     with an alpha background. */
+  .th-a-group {
+    background-color: hsl(var(--raised));
+    background-image: linear-gradient(
+      hsl(var(--accent) / 0.15),
+      hsl(var(--accent) / 0.15)
+    );
+  }
+
+  .th-a-col {
+    background-color: hsl(var(--raised));
+    background-image: linear-gradient(
+      hsl(var(--accent) / 0.1),
+      hsl(var(--accent) / 0.1)
+    );
+  }
+
   /* Sweeps a highlight across skeleton placeholders. */
   .skeleton {
     @apply relative overflow-hidden bg-raised;

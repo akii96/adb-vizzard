@@ -290,32 +290,57 @@ pub struct CurveSeries {
 }
 
 /// X axis choices for the curve tab.
+///
+/// Only knobs belong here. `input_len` and `output_len` define the workload
+/// rather than trading off against anything, so they select the case instead of
+/// forming an axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum XAxis {
     #[default]
     Concurrency,
-    InputLen,
-    OutputLen,
+    /// Per-user output speed, `1000 / median_tpot_ms` tokens per second.
+    Interactivity,
+}
+
+impl XAxis {
+    /// Whether a smaller x is the better outcome, which the frontier sweep needs.
+    /// Concurrency is a cost knob, interactivity is a result users feel.
+    fn lower_is_better(self) -> bool {
+        matches!(self, XAxis::Concurrency)
+    }
 }
 
 /// Builds one series per side, with the Pareto frontier flagged.
+///
+/// `case` restricts the series to a single `(input_len, output_len)` workload.
+/// Without it, points from unrelated workloads would be joined into one line.
 pub fn build_series(
     side: &SideData,
     metric: &str,
     x_axis: XAxis,
     aggregation: Aggregation,
+    case: Option<(i64, i64)>,
 ) -> CurveSeries {
     let cells = group_side(&side.children, &[], aggregation);
 
     let mut points: Vec<CurvePoint> = cells
         .into_iter()
+        .filter(|(key, _)| match case {
+            Some((isl, osl)) => key.input_len == isl && key.output_len == osl,
+            None => true,
+        })
         .filter_map(|(key, cell)| {
             let y = cell.metrics.get(metric)?;
             let x = match x_axis {
                 XAxis::Concurrency => key.concurrency as f64,
-                XAxis::InputLen => key.input_len as f64,
-                XAxis::OutputLen => key.output_len as f64,
+                XAxis::Interactivity => {
+                    let tpot = cell.metrics.median_tpot_ms;
+                    if tpot <= 0.0 || !tpot.is_finite() {
+                        return None;
+                    }
+                    parser::round2(1000.0 / tpot)
+                }
             };
             Some(CurvePoint {
                 x,
@@ -331,7 +356,11 @@ pub fn build_series(
         .collect();
 
     points.sort_by(|p, q| p.x.partial_cmp(&q.x).unwrap_or(std::cmp::Ordering::Equal));
-    mark_pareto(&mut points, lower_is_better(metric));
+    mark_pareto(
+        &mut points,
+        lower_is_better(metric),
+        x_axis.lower_is_better(),
+    );
 
     CurveSeries {
         label: side.label.clone(),
@@ -341,17 +370,24 @@ pub fn build_series(
 
 /// Flags non-dominated points.
 ///
-/// A point is on the frontier when no other point has both a smaller-or-equal x
-/// and a better y. Since the input is sorted by ascending x, one sweep tracking
-/// the best y so far is enough.
-fn mark_pareto(points: &mut [CurvePoint], lower_better: bool) {
+/// A point is dominated when another one is at least as good on x and strictly
+/// better on y. Sweeping from the best-x end and tracking the best y so far is
+/// enough; which end that is depends on whether small or large x is preferable.
+fn mark_pareto(points: &mut [CurvePoint], y_lower_better: bool, x_lower_better: bool) {
     let mut best: Option<f64> = None;
 
-    for point in points.iter_mut() {
+    // Input is sorted by ascending x, so a preference for large x walks it backwards.
+    let ordered: Vec<&mut CurvePoint> = if x_lower_better {
+        points.iter_mut().collect()
+    } else {
+        points.iter_mut().rev().collect()
+    };
+
+    for point in ordered {
         let improves = match best {
             None => true,
             Some(current) => {
-                if lower_better {
+                if y_lower_better {
                     point.y < current
                 } else {
                     point.y > current
@@ -603,6 +639,7 @@ mod tests {
             "output_throughput",
             XAxis::Concurrency,
             Aggregation::Median,
+            None,
         );
         let flags: Vec<bool> = series.points.iter().map(|p| p.is_pareto).collect();
         assert_eq!(flags, vec![true, true, false, true]);
@@ -624,6 +661,7 @@ mod tests {
             "median_tpot_ms",
             XAxis::Concurrency,
             Aggregation::Median,
+            None,
         );
         let flags: Vec<bool> = series.points.iter().map(|p| p.is_pareto).collect();
         // Lower TPOT is better, so only the descending points count.
@@ -631,19 +669,74 @@ mod tests {
     }
 
     #[test]
-    fn series_x_axis_can_switch_to_input_length() {
+    fn interactivity_axis_is_reciprocal_tpot() {
         let a = side(
             "A",
-            vec![child(500, 100, 4, 1.0, 1.0), child(1000, 100, 4, 2.0, 1.0)],
+            vec![
+                child(1000, 100, 4, 100.0, 20.0),
+                child(1000, 100, 8, 180.0, 50.0),
+            ],
         );
         let series = build_series(
             &a,
             "output_throughput",
-            XAxis::InputLen,
+            XAxis::Interactivity,
             Aggregation::Median,
+            None,
         );
         let xs: Vec<f64> = series.points.iter().map(|p| p.x).collect();
-        assert_eq!(xs, vec![500.0, 1000.0]);
+        // 50 ms per token is 20 tok/s per user, 20 ms is 50 tok/s.
+        assert_eq!(xs, vec![20.0, 50.0]);
+    }
+
+    // On the interactivity axis both axes improve upwards, so the frontier is the
+    // upper-right envelope rather than a running best from the left.
+    #[test]
+    fn interactivity_frontier_keeps_the_upper_right_envelope() {
+        let a = side(
+            "A",
+            vec![
+                // Slowest per user but highest throughput: still the best of its kind.
+                child(1000, 100, 32, 300.0, 100.0),
+                // Dominated: less throughput and slower per user than mc64 below.
+                child(1000, 100, 16, 150.0, 50.0),
+                child(1000, 100, 64, 200.0, 25.0),
+                child(1000, 100, 8, 100.0, 10.0),
+            ],
+        );
+        let series = build_series(
+            &a,
+            "output_throughput",
+            XAxis::Interactivity,
+            Aggregation::Median,
+            None,
+        );
+        let flags: Vec<(f64, bool)> = series.points.iter().map(|p| (p.x, p.is_pareto)).collect();
+        assert_eq!(
+            flags,
+            vec![(10.0, true), (20.0, false), (40.0, true), (100.0, true)]
+        );
+    }
+
+    #[test]
+    fn series_can_be_restricted_to_one_case() {
+        let a = side(
+            "A",
+            vec![
+                child(500, 100, 4, 1.0, 1.0),
+                child(1000, 100, 4, 2.0, 1.0),
+                child(1000, 100, 8, 3.0, 1.0),
+            ],
+        );
+        let series = build_series(
+            &a,
+            "output_throughput",
+            XAxis::Concurrency,
+            Aggregation::Median,
+            Some((1000, 100)),
+        );
+        let xs: Vec<f64> = series.points.iter().map(|p| p.x).collect();
+        assert_eq!(xs, vec![4.0, 8.0]);
     }
 
     // The tooltip has to name the benchmark case, so every point carries all three
@@ -652,8 +745,8 @@ mod tests {
     fn curve_points_identify_their_case_on_every_axis() {
         let a = side("A", vec![child(1000, 100, 8, 300.0, 35.0)]);
 
-        for axis in [XAxis::Concurrency, XAxis::InputLen, XAxis::OutputLen] {
-            let series = build_series(&a, "output_throughput", axis, Aggregation::Median);
+        for axis in [XAxis::Concurrency, XAxis::Interactivity] {
+            let series = build_series(&a, "output_throughput", axis, Aggregation::Median, None);
             let point = &series.points[0];
             assert_eq!(point.input_len, 1000);
             assert_eq!(point.output_len, 100);
@@ -677,6 +770,7 @@ mod tests {
             "output_throughput",
             XAxis::Concurrency,
             Aggregation::Median,
+            None,
         );
         assert_eq!(series.points.len(), 1);
         assert_eq!(series.points[0].run_count, 2);

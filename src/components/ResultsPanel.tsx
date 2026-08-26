@@ -1,5 +1,5 @@
 import { BarChart3, Loader2 } from "lucide-react";
-import { Suspense, lazy, useCallback, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
 
 import { ComparisonTable } from "@/components/ComparisonTable";
 import { ExportMenu } from "@/components/ExportMenu";
@@ -7,6 +7,7 @@ import { RawRuns } from "@/components/RawRuns";
 import {
   Checkbox,
   EmptyState,
+  Input,
   Select,
   Spinner,
   Tabs,
@@ -14,7 +15,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/primitives";
-import { useStore } from "@/store/session";
+import { availableCases, useStore } from "@/store/session";
 import { METRIC_LABELS, type Aggregation, type MetricKey, type XAxis } from "@/types";
 
 // Charts are the single largest dependency, and are not needed to render the
@@ -28,8 +29,7 @@ const METRIC_OPTIONS = (Object.keys(METRIC_LABELS) as MetricKey[]).map((key) => 
 
 const X_AXIS_OPTIONS: Array<{ value: XAxis; label: string }> = [
   { value: "concurrency", label: "concurrency" },
-  { value: "input_len", label: "input len" },
-  { value: "output_len", label: "output len" },
+  { value: "interactivity", label: "interactivity (1000 / TPOT)" },
 ];
 
 const AGGREGATION_OPTIONS: Array<{ value: Aggregation; label: string }> = [
@@ -41,12 +41,27 @@ const AGGREGATION_OPTIONS: Array<{ value: Aggregation; label: string }> = [
 
 export function ResultsPanel() {
   const store = useStore();
-  const { table, curves, metric, xAxis, aggregation, tableLoading, sides } = store;
+  const { table, curves, metric, xAxis, curveCase, aggregation, tableLoading, sides } = store;
 
   const [tab, setTab] = useState("table");
   const [logX, setLogX] = useState(false);
   const [paretoOnly, setParetoOnly] = useState(false);
+  /** Kept as typed text so the field can be cleared without snapping to a number. */
+  const [tpotSla, setTpotSla] = useState("");
   const chartHostRef = useRef<HTMLDivElement>(null);
+
+  const cases = useMemo(() => availableCases(sides), [sides]);
+  const caseOptions = useMemo(
+    () =>
+      cases.map((entry) => ({
+        value: `${entry.inputLen}/${entry.outputLen}`,
+        label: `in${entry.inputLen}_out${entry.outputLen}`,
+      })),
+    [cases],
+  );
+
+  const parsedSla = Number.parseFloat(tpotSla);
+  const tpotSlaMs = Number.isFinite(parsedSla) && parsedSla > 0 ? parsedSla : undefined;
 
   /**
    * Grabs the chart's canvas and saves it.
@@ -90,7 +105,7 @@ export function ResultsPanel() {
           <div className="ml-auto flex items-center gap-2">
             {tableLoading && <Spinner className="h-3.5 w-3.5 text-accent" />}
             <label className="flex items-center gap-1.5 text-[11px] text-muted">
-              metric
+              {tab === "curves" ? "y" : "metric"}
               <Select
                 value={metric}
                 options={METRIC_OPTIONS}
@@ -104,6 +119,21 @@ export function ResultsPanel() {
                   value={xAxis}
                   options={X_AXIS_OPTIONS}
                   onChange={(event) => store.setXAxis(event.target.value as XAxis)}
+                />
+              </label>
+            )}
+            {tab === "curves" && caseOptions.length > 0 && (
+              <label className="flex items-center gap-1.5 text-[11px] text-muted">
+                case
+                <Select
+                  value={
+                    curveCase ? `${curveCase.inputLen}/${curveCase.outputLen}` : caseOptions[0]!.value
+                  }
+                  options={caseOptions}
+                  onChange={(event) => {
+                    const [inputLen, outputLen] = event.target.value.split("/").map(Number);
+                    store.setCurveCase({ inputLen: inputLen!, outputLen: outputLen! });
+                  }}
                 />
               </label>
             )}
@@ -142,10 +172,31 @@ export function ResultsPanel() {
                 <Checkbox
                   checked={paretoOnly}
                   onChange={setParetoOnly}
-                  label={<span className="text-xs">Pareto frontier only</span>}
+                  label={
+                    <span
+                      className="text-xs"
+                      title="A config is dominated when another one is better on both axes at once, so it is never worth picking. This hides them and leaves the Pareto frontier."
+                    >
+                      hide dominated configs
+                    </span>
+                  }
                 />
+                {xAxis === "interactivity" && (
+                  <label className="flex items-center gap-1.5 text-[11px] text-muted">
+                    TPOT SLA (ms)
+                    <Input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={tpotSla}
+                      placeholder="none"
+                      onChange={(event) => setTpotSla(event.target.value)}
+                      className="h-8 w-20 px-2 text-xs"
+                    />
+                  </label>
+                )}
                 <span className="ml-auto text-[11px] text-muted">
-                  drag to zoom · double-click to reset · ringed points are non-dominated
+                  drag to zoom · double-click to reset · ringed points are on the Pareto frontier
                 </span>
               </div>
               <div ref={chartHostRef} className="min-h-0 flex-1 px-1 pb-1">
@@ -162,6 +213,7 @@ export function ResultsPanel() {
                     xAxis={xAxis}
                     logX={logX}
                     paretoOnly={paretoOnly}
+                    tpotSlaMs={tpotSlaMs}
                   />
                 </Suspense>
               </div>

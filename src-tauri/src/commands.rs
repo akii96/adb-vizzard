@@ -339,6 +339,12 @@ pub struct CurveArgs {
     pub x_axis: XAxis,
     #[serde(default)]
     pub aggregation: Aggregation,
+    /// Restricts the curve to one workload. Both are needed for the filter to
+    /// apply; either missing means every case is plotted.
+    #[serde(default)]
+    pub input_len: Option<i64>,
+    #[serde(default)]
+    pub output_len: Option<i64>,
 }
 
 /// Builds one curve series per loaded side.
@@ -354,6 +360,8 @@ pub async fn build_curves(
         return Err(AppError::config(format!("unknown metric {}", args.metric)));
     }
 
+    let case = args.input_len.zip(args.output_len);
+
     let mut series = Vec::new();
     for side in [Side::A, Side::B] {
         if let Some(data) = state.take_side(side).await {
@@ -362,6 +370,7 @@ pub async fn build_curves(
                 &args.metric,
                 args.x_axis,
                 args.aggregation,
+                case,
             ));
         }
     }

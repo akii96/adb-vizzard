@@ -6,6 +6,7 @@ import type {
   ComparisonTable,
   ConnectionInfo,
   CredSource,
+  CurveCase,
   CurveSeries,
   LoadProgress,
   MetricKey,
@@ -66,6 +67,12 @@ interface Store {
 
   metric: MetricKey;
   xAxis: XAxis;
+  /**
+   * Workload plotted on the curves tab. Different input/output lengths have
+   * different trade-off curves, so only one is charted at a time. Null until a
+   * side loads, at which point the first case is picked.
+   */
+  curveCase: CurveCase | null;
   aggregation: Aggregation;
   tableLoading: boolean;
 
@@ -87,6 +94,7 @@ interface Store {
 
   setMetric: (metric: MetricKey) => void;
   setXAxis: (axis: XAxis) => void;
+  setCurveCase: (curveCase: CurveCase) => void;
   setAggregation: (aggregation: Aggregation) => void;
   refresh: () => Promise<void>;
 
@@ -110,6 +118,7 @@ export const useStore = create<Store>((set, get) => ({
 
   metric: "output_throughput",
   xAxis: "concurrency",
+  curveCase: null,
   aggregation: "median",
   tableLoading: false,
 
@@ -263,6 +272,11 @@ export const useStore = create<Store>((set, get) => ({
     void get().refresh();
   },
 
+  setCurveCase(curveCase) {
+    set({ curveCase });
+    void get().refresh();
+  },
+
   setAggregation(aggregation) {
     set({ aggregation });
     void get().refresh();
@@ -277,9 +291,17 @@ export const useStore = create<Store>((set, get) => ({
   async refresh() {
     const { sides, aggregation, metric, xAxis, settings } = get();
     if (!sides.a.data) {
-      set({ table: null, curves: null });
+      set({ table: null, curves: null, curveCase: null });
       return;
     }
+
+    // A newly loaded run may not contain the case that was selected before, so
+    // fall back to its first one rather than charting nothing.
+    const cases = availableCases(sides);
+    const selected = get().curveCase;
+    const curveCase =
+      selected && cases.some((c) => sameCase(c, selected)) ? selected : (cases[0] ?? null);
+    if (curveCase !== selected) set({ curveCase });
 
     set({ tableLoading: true });
     try {
@@ -288,7 +310,7 @@ export const useStore = create<Store>((set, get) => ({
           compareFields: settings?.compare_fields,
           aggregation,
         }),
-        ipc.buildCurves({ metric, xAxis, aggregation }),
+        ipc.buildCurves({ metric, xAxis, aggregation, case: curveCase }),
       ]);
       set({ table, curves, tableLoading: false });
     } catch (error) {
@@ -343,6 +365,29 @@ export function subscribeToProgress() {
       },
     }));
   });
+}
+
+export function sameCase(one: CurveCase, other: CurveCase) {
+  return one.inputLen === other.inputLen && one.outputLen === other.outputLen;
+}
+
+/**
+ * The distinct workloads across both sides, in ascending input then output
+ * order. The curves tab charts one of these at a time.
+ */
+export function availableCases(sides: Record<Side, SideState>): CurveCase[] {
+  const seen = new Map<string, CurveCase>();
+  for (const side of [sides.a, sides.b]) {
+    for (const child of side.data?.children ?? []) {
+      const key = `${child.input_len}/${child.output_len}`;
+      if (!seen.has(key)) {
+        seen.set(key, { inputLen: child.input_len, outputLen: child.output_len });
+      }
+    }
+  }
+  return [...seen.values()].sort(
+    (one, other) => one.inputLen - other.inputLen || one.outputLen - other.outputLen,
+  );
 }
 
 /** Children remaining after the user's checkbox selection. */

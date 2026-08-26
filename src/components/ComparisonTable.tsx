@@ -75,7 +75,7 @@ export function ComparisonTable({ table }: { table: Table }) {
               <Th colSpan={3} rowSpan={2} className="z-30 bg-raised text-left">
                 case
               </Th>
-              <Th colSpan={fieldCount + metricCount} className="bg-accent/15 text-accent">
+              <Th colSpan={fieldCount + metricCount} className="th-a-group text-accent">
                 <span className="truncate" title={table.label_a}>
                   {table.label_a}
                 </span>
@@ -96,12 +96,12 @@ export function ComparisonTable({ table }: { table: Table }) {
             {/* Row 2: per-column names. */}
             <tr>
               {table.field_headers.map((header) => (
-                <Th key={`a-${header}`} className="bg-accent/10 text-accent/90">
+                <Th key={`a-${header}`} className="th-a-col text-accent/90">
                   {header}
                 </Th>
               ))}
               {table.metric_keys.map((key) => (
-                <Th key={`a-${key}`} className="bg-accent/10 text-accent/90">
+                <Th key={`a-${key}`} className="th-a-col text-accent/90">
                   {METRIC_LABELS[key]}
                 </Th>
               ))}
