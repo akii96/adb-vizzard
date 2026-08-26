@@ -1,0 +1,107 @@
+name: Release
+
+# Tag a commit to publish installers:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The tag version must match `version` in src-tauri/tauri.conf.json; the job
+# checks this and fails fast rather than shipping mislabelled artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: Build Windows installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Check the tag matches the app version
+        shell: pwsh
+        run: |
+          $ref = "${{ github.ref_name }}"
+          $tagVersion = $ref -replace '^v', ''
+          $appVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=$tagVersion  tauri.conf.json=$appVersion"
+          if ($ref -like 'v*' -and $tagVersion -ne $appVersion) {
+            throw "Tag $ref does not match version $appVersion in src-tauri/tauri.conf.json"
+          }
+
+      - name: Test before shipping
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Generate icons
+        run: npm run icons
+
+      - name: Build installers
+        run: npx tauri build
+
+      - name: Stage release artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $bundle = "src-tauri/target/release/bundle"
+          Copy-Item "$bundle/nsis/*.exe" artifacts/
+          Copy-Item "$bundle/msi/*.msi" artifacts/
+
+          # Portable build: the bare executable, for anyone who cannot or would
+          # rather not run an installer. Needs the WebView2 runtime, which ships
+          # with Windows 10/11.
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $portable = "ADB Vizzard_${version}_x64_portable"
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          Copy-Item "src-tauri/target/release/adb-vizzard.exe" $portable/
+          Copy-Item README.md $portable/
+          Compress-Archive -Path "$portable/*" -DestinationPath "artifacts/$portable.zip"
+
+          Get-ChildItem artifacts | ForEach-Object {
+            "{0,8:N2} MB  {1}" -f ($_.Length / 1MB), $_.Name
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: artifacts/*
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            Pick one:
+
+            - **`ADB Vizzard_*_x64-setup.exe`** — recommended. Installs for the current
+              user under `%LOCALAPPDATA%` and needs **no administrator rights**.
+            - **`ADB Vizzard_*_x64_en-US.msi`** — per-machine, for IT-managed rollout.
+            - **`ADB Vizzard_*_x64_portable.zip`** — no install at all; unzip and run
+              `adb-vizzard.exe`.
+
+            No Python, Node or Rust needed to run any of these. WebView2 ships with
+            Windows 10/11, and the installers carry its bootstrapper as a fallback.

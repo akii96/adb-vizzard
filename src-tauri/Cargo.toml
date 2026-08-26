@@ -1,0 +1,68 @@
+[package]
+name = "adb-vizzard"
+version = "0.1.0"
+description = "Azure Databricks experiment sweep viewer and comparer"
+authors = ["ADB Vizzard"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "adb_vizzard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "adb-vizzard"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "fs",
+    "sync",
+    "time",
+] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+
+# native-tls, not rustls: on Windows this is Schannel, which trusts the Windows
+# certificate store. Corporate networks terminate TLS at an inspection proxy
+# (Zscaler, for one) and re-sign with a private root that is installed in the OS
+# store but is not in webpki-roots. With bundled roots the app cannot reach any
+# workspace from inside the corporate network, while curl and the browser can.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "gzip",
+    "http2",
+    "charset",
+    "native-tls",
+] }
+
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+regex = "1"
+csv = "1"
+rand = "0.8"
+chrono = { version = "0.4", default-features = false, features = [
+    "clock",
+    "serde",
+] }
+rust_xlsxwriter = "0.92.0"
+
+# Release profile per PLAN.md §9.2 — small binary is an explicit product goal.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false

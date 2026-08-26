@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: 210 20% 98%;
+    --surface: 0 0% 100%;
+    --raised: 210 20% 96%;
+    --border: 214 20% 88%;
+    --fg: 222 20% 16%;
+    --muted: 215 12% 46%;
+    --accent: 199 89% 44%;
+    --accent-fg: 0 0% 100%;
+    --good: 152 60% 36%;
+    --bad: 0 68% 50%;
+    --warn: 36 92% 44%;
+  }
+
+  .dark {
+    --bg: 222 25% 9%;
+    --surface: 222 22% 12%;
+    --raised: 220 20% 16%;
+    --border: 218 18% 22%;
+    --fg: 210 18% 92%;
+    --muted: 215 14% 62%;
+    --accent: 190 90% 50%;
+    --accent-fg: 222 30% 10%;
+    --good: 152 62% 46%;
+    --bad: 0 72% 60%;
+    --warn: 38 92% 55%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg text-fg antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    /* A utility window should not feel like a web page. */
+    user-select: none;
+    overflow: hidden;
+  }
+
+  input,
+  textarea,
+  [data-selectable] {
+    user-select: text;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full;
+    background: hsl(var(--border));
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted));
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent/70 ring-offset-1 ring-offset-bg;
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Sweeps a highlight across skeleton placeholders. */
+  .skeleton {
+    @apply relative overflow-hidden bg-raised;
+  }
+
+  .skeleton::after {
+    content: "";
+    @apply absolute inset-0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--fg) / 0.06),
+      transparent
+    );
+    animation: shimmer 1.4s infinite;
+  }
+
+  @keyframes shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+}

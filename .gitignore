@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+src-tauri/target/
+
+# Tauri-generated permission schemas
+src-tauri/gen/
+
+# Credentials — never commit these
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs and temp
+*.log
+npm-debug.log*
+yarn-error.log*
+*.tmp
+*.tsbuildinfo
+
+# NOTE: src-tauri/icons/ IS committed. build.rs embeds icon.ico, so a fresh clone
+# could not `cargo build` without it. Regenerate with `npm run icons`; output is
+# deterministic, so it produces no diff churn.
+#
+# NOTE: fixtures/ IS committed. It is a few KB of real artifacts the golden tests
+# need. Secrets in it are scrubbed — see fixtures/README.md.
