@@ -3,8 +3,9 @@ name: Release
 # Tag a commit to publish installers:
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# The tag version must match `version` in src-tauri/tauri.conf.json; the job
-# checks this and fails fast rather than shipping mislabelled artifacts.
+# Stable tags must match the app version. Prerelease tags may add a suffix,
+# e.g. app version 0.1.0 with tag v0.1.0-beta.2. MSI rejects textual
+# prerelease identifiers, so the packaged app version must remain numeric.
 on:
   push:
     tags: ["v*"]
@@ -42,9 +43,9 @@ jobs:
         shell: pwsh
         run: |
           $ref = "${{ github.ref_name }}"
-          $tagVersion = $ref -replace '^v', ''
+          $tagVersion = ($ref -replace '^v', '') -replace '-.*$', ''
           $appVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          Write-Host "tag=$tagVersion  tauri.conf.json=$appVersion"
+          Write-Host "tag=$ref  numeric tag version=$tagVersion  tauri.conf.json=$appVersion"
           if ($ref -like 'v*' -and $tagVersion -ne $appVersion) {
             throw "Tag $ref does not match version $appVersion in src-tauri/tauri.conf.json"
           }
