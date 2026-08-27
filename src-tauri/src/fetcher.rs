@@ -760,6 +760,7 @@ mod tests {
                 median_ttft_ms: 0.0,
                 median_tpot_ms: 0.0,
                 median_e2el_ms: 0.0,
+                e2el_approximate: false,
                 output_throughput: 0.0,
                 total_token_throughput: 0.0,
             },

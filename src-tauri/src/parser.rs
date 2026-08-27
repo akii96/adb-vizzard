@@ -46,6 +46,9 @@ pub struct BenchmarkMetrics {
     pub median_ttft_ms: f64,
     pub median_tpot_ms: f64,
     pub median_e2el_ms: f64,
+    /// True when `median_e2el_ms` was derived rather than read, so the UI can
+    /// mark the number as an estimate. See [`approximate_e2el`].
+    pub e2el_approximate: bool,
     pub output_throughput: f64,
     pub total_token_throughput: f64,
 }
@@ -302,14 +305,53 @@ pub fn parse_benchmark(text: &str) -> AppResult<BenchmarkMetrics> {
         )))
     };
 
+    let median_ttft_ms = metric("median_ttft_ms")?;
+    let median_tpot_ms = metric("median_tpot_ms")?;
+
+    let (median_e2el_ms, e2el_approximate) = match metric("median_e2el_ms") {
+        Ok(value) => (value, false),
+        Err(missing) => (
+            approximate_e2el(object, median_ttft_ms, median_tpot_ms).ok_or(missing)?,
+            true,
+        ),
+    };
+
     Ok(BenchmarkMetrics {
         median_itl_ms: metric("median_itl_ms")?,
-        median_ttft_ms: metric("median_ttft_ms")?,
-        median_tpot_ms: metric("median_tpot_ms")?,
-        median_e2el_ms: metric("median_e2el_ms")?,
+        median_ttft_ms,
+        median_tpot_ms,
+        median_e2el_ms,
+        e2el_approximate,
         output_throughput: metric("output_throughput")?,
         total_token_throughput: metric("total_token_throughput")?,
     })
+}
+
+/// Rebuilds end-to-end latency from the per-token numbers.
+///
+/// `vllm bench serve` only writes the latency blocks named in
+/// `--percentile-metrics`, and its default for generative models is
+/// `ttft,tpot,itl`, so a sweep launched without `e2el` produces an artifact with
+/// no end-to-end field at all. A request's end-to-end time is its first token
+/// plus one TPOT per remaining token, and the output length per request comes
+/// from the same artifact, so the run is worth approximating rather than
+/// rejecting. Flagged as approximate, since the median of sums is not the sum of
+/// medians.
+fn approximate_e2el(
+    object: &serde_json::Map<String, serde_json::Value>,
+    ttft_ms: f64,
+    tpot_ms: f64,
+) -> Option<f64> {
+    let completed = object.get("completed")?.as_f64()?;
+    let output_tokens = object.get("total_output_tokens")?.as_f64()?;
+    if completed <= 0.0 || output_tokens <= 0.0 {
+        return None;
+    }
+
+    let tokens_per_request = output_tokens / completed;
+    Some(round2(
+        ttft_ms + tpot_ms * (tokens_per_request - 1.0).max(0.0),
+    ))
 }
 
 /// Reads `max_concurrency` from the benchmark artifact, which is the value the
@@ -624,6 +666,39 @@ vllm bench serve \
         assert!(parse_benchmark("[1, 2, 3]").is_err());
     }
 
+    // A recent `vllm bench serve` run launched without `e2el` in
+    // --percentile-metrics: complete ttft/tpot/itl blocks and no e2el field.
+    #[test]
+    fn approximates_e2el_when_the_harness_omitted_it() {
+        let text = r#"{
+            "max_concurrency": 8,
+            "completed": 20,
+            "total_output_tokens": 20480,
+            "median_ttft_ms": 30799.74504650454,
+            "median_tpot_ms": 206.77968056210526,
+            "median_itl_ms": 43.19396149367094,
+            "output_throughput": 32.48393290743179,
+            "total_token_throughput": 4190.427345058702
+        }"#;
+
+        let metrics = parse_benchmark(text).unwrap();
+        assert!(metrics.e2el_approximate);
+        // 1024 output tokens per request: 30799.75 + 206.78 * 1023.
+        assert_eq!(metrics.median_e2el_ms, 242335.69);
+
+        // Without the token counts there is nothing to derive from, so the run is
+        // still rejected rather than silently reported as zero.
+        let bare = r#"{"median_ttft_ms": 1.0, "median_tpot_ms": 2.0, "median_itl_ms": 3.0,
+            "output_throughput": 4.0, "total_token_throughput": 5.0}"#;
+        let err = parse_benchmark(bare).unwrap_err().to_string();
+        assert!(err.contains("median_e2el_ms"), "{err}");
+    }
+
+    #[test]
+    fn a_reported_e2el_is_never_flagged_as_approximate() {
+        assert!(!parse_benchmark(SGLANG_BENCHMARK).unwrap().e2el_approximate);
+    }
+
     #[test]
     fn metric_lookup_covers_every_exported_key() {
         let metrics = BenchmarkMetrics {
@@ -631,6 +706,7 @@ vllm bench serve \
             median_ttft_ms: 2.0,
             median_tpot_ms: 3.0,
             median_e2el_ms: 4.0,
+            e2el_approximate: false,
             output_throughput: 5.0,
             total_token_throughput: 6.0,
         };

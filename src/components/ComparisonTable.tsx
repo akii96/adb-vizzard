@@ -4,7 +4,13 @@ import { useMemo, useRef } from "react";
 import { Badge, EmptyState } from "@/components/ui/primitives";
 import { cn, formatMetric, formatPercent } from "@/lib/utils";
 import { taggedLabels, useStore } from "@/store/session";
-import { METRIC_LABELS, type ComparisonRow, type ComparisonTable as Table, type MetricKey } from "@/types";
+import {
+  METRIC_LABELS,
+  type CellGroup,
+  type ComparisonRow,
+  type ComparisonTable as Table,
+  type MetricKey,
+} from "@/types";
 
 const ROW_HEIGHT = 30;
 /** Extra rows rendered outside the viewport, to avoid blank flashes on scroll. */
@@ -216,6 +222,7 @@ function Row({
           )}
         >
           {row.a ? formatMetric(row.a.metrics[key]) : "—"}
+          <Estimated cell={row.a} metricKey={key} />
         </Td>
       ))}
 
@@ -235,12 +242,29 @@ function Row({
               )}
             >
               {row.b ? formatMetric(row.b.metrics[key]) : "—"}
+              <Estimated cell={row.b} metricKey={key} />
             </Td>
           ))}
           <RatioCell value={row.ratios[primaryMetric]} metric={primaryMetric} />
         </>
       )}
     </tr>
+  );
+}
+
+/**
+ * Marks an E2EL that was derived rather than measured, which happens when the
+ * sweep was launched without `e2el` in `--percentile-metrics`.
+ */
+function Estimated({ cell, metricKey }: { cell: CellGroup | null; metricKey: MetricKey }) {
+  if (metricKey !== "median_e2el_ms" || !cell?.metrics.e2el_approximate) return null;
+  return (
+    <span
+      className="cursor-help text-warn"
+      title="Estimated: this run's benchmark artifact has no end-to-end latency field, so it was derived as median TTFT + median TPOT × (output tokens per request − 1). vLLM only writes E2EL when --percentile-metrics includes e2el."
+    >
+      *
+    </span>
   );
 }
 

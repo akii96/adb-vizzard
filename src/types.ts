@@ -50,6 +50,8 @@ export interface BenchmarkMetrics {
   median_ttft_ms: number;
   median_tpot_ms: number;
   median_e2el_ms: number;
+  /** `median_e2el_ms` was derived from TTFT and TPOT, not reported by the harness. */
+  e2el_approximate: boolean;
   output_throughput: number;
   total_token_throughput: number;
 }

@@ -231,6 +231,8 @@ fn aggregate(group: &[&ChildRun], aggregation: Aggregation) -> BenchmarkMetrics 
         median_ttft_ms: pick("median_ttft_ms"),
         median_tpot_ms: pick("median_tpot_ms"),
         median_e2el_ms: pick("median_e2el_ms"),
+        // One estimated child makes the aggregate an estimate.
+        e2el_approximate: group.iter().any(|child| child.metrics.e2el_approximate),
         output_throughput: pick("output_throughput"),
         total_token_throughput: pick("total_token_throughput"),
     }
@@ -423,6 +425,7 @@ mod tests {
                 median_ttft_ms: 20.0,
                 median_tpot_ms: tpot,
                 median_e2el_ms: 40.0,
+                e2el_approximate: false,
                 output_throughput: throughput,
                 total_token_throughput: throughput * 10.0,
             },

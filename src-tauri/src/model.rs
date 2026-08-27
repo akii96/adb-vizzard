@@ -164,6 +164,7 @@ mod tests {
                 median_ttft_ms: 2.0,
                 median_tpot_ms: 3.0,
                 median_e2el_ms: 4.0,
+                e2el_approximate: false,
                 output_throughput: 5.0,
                 total_token_throughput: 6.0,
             },
