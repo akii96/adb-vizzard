@@ -1,7 +1,7 @@
 import { Trash2 } from "lucide-react";
 import { useState } from "react";
 
-import { Badge, Button, Input, Modal } from "@/components/ui/primitives";
+import { Badge, Button, Input, Modal, Switch } from "@/components/ui/primitives";
 import * as ipc from "@/lib/ipc";
 import { formatBytes } from "@/lib/utils";
 import { useStore } from "@/store/session";
@@ -36,6 +36,11 @@ export function SettingsDialog({
     } finally {
       setBusy(false);
     }
+  }
+
+  async function toggleCompareFields(enabled: boolean) {
+    await patch({ compare_fields_enabled: enabled });
+    await refresh();
   }
 
   async function commitCompareFields() {
@@ -109,21 +114,39 @@ export function SettingsDialog({
         </section>
 
         <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
-            Comparison fields
-          </h3>
+          <div className="mb-2 flex items-center gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">
+              Comparison fields
+            </h3>
+            <Switch
+              checked={settings.compare_fields_enabled}
+              onChange={(enabled) => void toggleCompareFields(enabled)}
+              disabled={busy}
+              label="Show comparison fields"
+            />
+          </div>
           <Input
             value={fieldsValue}
             onChange={(event) => setFieldsDraft(event.target.value)}
             onBlur={() => void commitCompareFields()}
             placeholder="tensor_parallel_size, env:VLLM_ROCM_USE_AITER"
             spellCheck={false}
+            disabled={!settings.compare_fields_enabled}
             className="font-mono text-xs"
           />
           <p className="mt-1.5 text-xs leading-relaxed text-muted">
-            Comma-separated. Use a flag name without <code>--</code>, or{" "}
-            <code>env:NAME</code> for a docker env var. Missing values export as{" "}
-            <code>image-default</code>, matching <code>adb-summarize</code>.
+            {settings.compare_fields_enabled ? (
+              <>
+                Comma-separated. Use a flag name without <code>--</code>, or{" "}
+                <code>env:NAME</code> for a docker env var. Missing values export as{" "}
+                <code>image-default</code>, matching <code>adb-summarize</code>.
+              </>
+            ) : (
+              <>
+                Off, so the table and exports show only the cases and the metrics. Switch it on
+                to add a column per field, showing what each run was served with.
+              </>
+            )}
           </p>
         </section>
 

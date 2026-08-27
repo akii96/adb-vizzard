@@ -166,6 +166,48 @@ export function Checkbox({
 }
 
 // ---------------------------------------------------------------------------
+// Switch
+// ---------------------------------------------------------------------------
+
+export interface SwitchProps {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  /** Describes what the switch controls, for screen readers. */
+  label: string;
+  className?: string;
+  disabled?: boolean;
+}
+
+/** A checkbox reads as one item among many; a switch reads as a feature on or off. */
+export function Switch({ checked, onChange, label, className, disabled }: SwitchProps) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        "relative h-4 w-7 shrink-0 rounded-full transition-colors",
+        "disabled:cursor-not-allowed disabled:opacity-50",
+        checked ? "bg-accent" : "bg-border",
+        className,
+      )}
+    >
+      <span
+        className={cn(
+          // Anchored left: without it, the button's centred text alignment decides
+          // the knob's static position and the offsets below start from the middle.
+          "absolute left-0 top-0.5 h-3 w-3 rounded-full bg-surface shadow-sm transition-transform",
+          checked ? "translate-x-3.5" : "translate-x-0.5",
+        )}
+      />
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Modal
 // ---------------------------------------------------------------------------
 

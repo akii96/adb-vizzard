@@ -168,6 +168,7 @@ export interface SettingsView {
   theme: "system" | "light" | "dark";
   default_metric: MetricKey;
   compare_fields: string[];
+  compare_fields_enabled: boolean;
   recent_runs: RecentRun[];
   control_concurrency: number;
   blob_concurrency: number;

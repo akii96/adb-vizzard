@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import * as ipc from "@/lib/ipc";
+import { formatLaunchTime, shortRunId } from "@/lib/utils";
 import type {
   Aggregation,
   ComparisonTable,
@@ -307,7 +308,7 @@ export const useStore = create<Store>((set, get) => ({
     try {
       const [table, curves] = await Promise.all([
         ipc.buildComparison({
-          compareFields: settings?.compare_fields,
+          compareFields: activeCompareFields(settings),
           aggregation,
         }),
         ipc.buildCurves({ metric, xAxis, aggregation, case: curveCase }),
@@ -367,6 +368,16 @@ export function subscribeToProgress() {
   });
 }
 
+/**
+ * The comparison fields to join on, which is none while the feature is switched
+ * off. Sent explicitly so the table and the exports agree without the backend
+ * having to guess.
+ */
+export function activeCompareFields(settings: SettingsView | null): string[] {
+  if (!settings?.compare_fields_enabled) return [];
+  return settings.compare_fields;
+}
+
 export function sameCase(one: CurveCase, other: CurveCase) {
   return one.inputLen === other.inputLen && one.outputLen === other.outputLen;
 }
@@ -388,6 +399,61 @@ export function availableCases(sides: Record<Side, SideState>): CurveCase[] {
   return [...seen.values()].sort(
     (one, other) => one.inputLen - other.inputLen || one.outputLen - other.outputLen,
   );
+}
+
+export interface SideLabels {
+  a: string;
+  b: string | null;
+}
+
+/**
+ * The display name for each side: what the user typed, or the auto-derived label.
+ *
+ * Two sweeps of the same parent, or a lazily reused run name, produce identical
+ * derived labels. That is not just ugly: ECharts merges series that share a name
+ * into one legend entry, so the two lines become indistinguishable. When the
+ * labels collide, each gets its launch time appended, falling back to a short run
+ * ID for local folder loads, which carry no timestamps.
+ */
+export function effectiveLabels(sides: Record<Side, SideState>): SideLabels {
+  const base = (side: SideState): string | null => {
+    if (!side.data) return null;
+    const override = side.labelOverride?.trim();
+    return override && override.length > 0 ? override : side.data.label;
+  };
+
+  const a = base(sides.a);
+  const b = base(sides.b);
+  if (a === null) return { a: "", b: null };
+  if (b === null || a.trim().toLowerCase() !== b.trim().toLowerCase()) {
+    return { a, b };
+  }
+
+  return {
+    a: `${a} · ${discriminator(sides.a)}`,
+    b: `${b} · ${discriminator(sides.b)}`,
+  };
+}
+
+/** Prefixed with the panel each side came from, for on-screen use. */
+export function taggedLabels(sides: Record<Side, SideState>): SideLabels {
+  const labels = effectiveLabels(sides);
+  return {
+    a: labels.a ? `A · ${labels.a}` : "",
+    b: labels.b === null ? null : `B · ${labels.b}`,
+  };
+}
+
+function discriminator(side: SideState): string {
+  const data = side.data;
+  if (!data) return "";
+
+  const launched = data.children
+    .map((child) => child.start_time)
+    .filter((value): value is number => typeof value === "number" && value > 0);
+
+  if (launched.length > 0) return formatLaunchTime(Math.min(...launched));
+  return shortRunId(data.run_id);
 }
 
 /** Children remaining after the user's checkbox selection. */

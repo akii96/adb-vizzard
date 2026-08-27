@@ -98,6 +98,7 @@ export function RunPicker({ side }: { side: Side }) {
 
   const data = state.data;
   const allIncluded = data ? state.excluded.size === 0 : false;
+  const autoLabel = data?.label ?? "";
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2.5 p-3">
@@ -229,7 +230,17 @@ export function RunPicker({ side }: { side: Side }) {
       {data && (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
           <div className="rounded-lg border border-border bg-raised/40 p-2.5">
-            <p className="truncate text-sm font-medium text-fg" title={data.run_name}>
+            {/* The label names this side in the table header, the chart legend and
+                the exports, so it is editable right where the run is loaded. */}
+            <Input
+              value={state.labelOverride ?? ""}
+              onChange={(event) => store.setLabelOverride(side, event.target.value || null)}
+              placeholder={autoLabel}
+              title={`Legend and header name. Empty uses “${autoLabel}”.`}
+              spellCheck={false}
+              className="h-7 border-transparent bg-transparent px-0 text-sm font-medium hover:border-border focus:border-accent/60 focus:px-2"
+            />
+            <p className="truncate text-xs text-muted" title={data.run_name}>
               {data.run_name}
             </p>
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">

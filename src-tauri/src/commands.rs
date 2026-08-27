@@ -321,7 +321,7 @@ pub async fn build_comparison(
 
     let compare_fields = match args.compare_fields {
         Some(fields) => fields,
-        None => state.settings_snapshot().await.compare_fields,
+        None => state.settings_snapshot().await.active_compare_fields(),
     };
 
     Ok(comparator::build_table(
@@ -412,7 +412,7 @@ pub async fn export(state: State<'_, AppState>, args: ExportArgs) -> AppResult<S
 
     let compare_fields = match args.compare_fields {
         Some(fields) => fields,
-        None => state.settings_snapshot().await.compare_fields,
+        None => state.settings_snapshot().await.active_compare_fields(),
     };
     let options = args.options.unwrap_or_default();
     let path = PathBuf::from(&args.path);
@@ -455,6 +455,8 @@ pub struct SettingsPatch {
     #[serde(default)]
     pub compare_fields: Option<Vec<String>>,
     #[serde(default)]
+    pub compare_fields_enabled: Option<bool>,
+    #[serde(default)]
     pub control_concurrency: Option<usize>,
     #[serde(default)]
     pub blob_concurrency: Option<usize>,
@@ -482,6 +484,9 @@ pub async fn save_settings(
         }
         if let Some(fields) = patch.compare_fields {
             settings.compare_fields = fields;
+        }
+        if let Some(enabled) = patch.compare_fields_enabled {
+            settings.compare_fields_enabled = enabled;
         }
         if let Some(value) = patch.control_concurrency {
             settings.control_concurrency = value;

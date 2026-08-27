@@ -46,6 +46,21 @@ export function formatRelativeTime(iso: string): string {
 }
 
 /**
+ * When a run was launched, short enough to sit inside a chart legend. The year is
+ * omitted: this only ever distinguishes two runs being compared right now.
+ */
+export function formatLaunchTime(epochMs: number): string {
+  const date = new Date(epochMs);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
  * Client-side mirror of the backend's run-ID extraction, used to validate as the
  * user types without a round trip. The backend remains authoritative.
  */

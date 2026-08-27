@@ -133,6 +133,7 @@ export async function saveSettings(patch: {
   theme?: string;
   default_metric?: string;
   compare_fields?: string[];
+  compare_fields_enabled?: boolean;
   control_concurrency?: number;
   blob_concurrency?: number;
   cache_cap_mb?: number;

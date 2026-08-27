@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button, Input } from "@/components/ui/primitives";
 import * as ipc from "@/lib/ipc";
-import { useStore } from "@/store/session";
+import { activeCompareFields, effectiveLabels, useStore } from "@/store/session";
 import type { ExportKind } from "@/types";
 
 const OPTIONS: Array<{
@@ -42,13 +42,16 @@ const OPTIONS: Array<{
 ];
 
 export function ExportMenu({ onExportChart }: { onExportChart: () => void }) {
-  const { sides, aggregation, settings, table, toast } = useStore();
+  const store = useStore();
+  const { sides, aggregation, settings, toast } = store;
   const [open, setOpen] = useState(false);
-  const [labelA, setLabelA] = useState<string | null>(null);
-  const [labelB, setLabelB] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const disabled = !sides.a.data;
+
+  // Editing here is the same edit as in the run panel, so a name typed before an
+  // export also shows up in the table header and the chart legend.
+  const labels = effectiveLabels(sides);
 
   useEffect(() => {
     if (!open) return;
@@ -71,11 +74,11 @@ export function ExportMenu({ onExportChart }: { onExportChart: () => void }) {
       const written = await ipc.exportFile({
         kind: option.kind,
         path,
-        compareFields: settings?.compare_fields,
+        compareFields: activeCompareFields(settings),
         aggregation,
         options: {
-          label_a: labelA,
-          label_b: labelB,
+          label_a: labels.a,
+          label_b: labels.b,
           ratio_metrics: [],
         },
       });
@@ -87,9 +90,7 @@ export function ExportMenu({ onExportChart }: { onExportChart: () => void }) {
   }
 
   function suggestName(kind: ExportKind): string {
-    const base = (labelA ?? table?.label_a ?? "comparison")
-      .replace(/[^\w.-]+/g, "_")
-      .slice(0, 60);
+    const base = (labels.a || "comparison").replace(/[^\w.-]+/g, "_").slice(0, 60);
     return kind === "raw_csv" ? `${base}_raw` : `${base}_compare`;
   }
 
@@ -112,16 +113,16 @@ export function ExportMenu({ onExportChart }: { onExportChart: () => void }) {
               Side labels
             </p>
             <Input
-              value={labelA ?? table?.label_a ?? ""}
-              onChange={(event) => setLabelA(event.target.value)}
-              placeholder="Side A label"
+              value={sides.a.labelOverride ?? ""}
+              onChange={(event) => store.setLabelOverride("a", event.target.value || null)}
+              placeholder={labels.a || "Side A label"}
               className="h-8 text-xs"
             />
-            {table?.label_b !== null && table?.label_b !== undefined && (
+            {sides.b.data && (
               <Input
-                value={labelB ?? table.label_b}
-                onChange={(event) => setLabelB(event.target.value)}
-                placeholder="Side B label"
+                value={sides.b.labelOverride ?? ""}
+                onChange={(event) => store.setLabelOverride("b", event.target.value || null)}
+                placeholder={labels.b ?? "Side B label"}
                 className="h-8 text-xs"
               />
             )}

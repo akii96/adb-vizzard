@@ -60,6 +60,12 @@ pub struct AppSettings {
     #[serde(default)]
     pub compare_fields: Vec<String>,
 
+    /// Whether the comparison-field columns are shown at all. Off by default:
+    /// most comparisons only want the case columns and the metrics, and the
+    /// field list stays configured while the feature is switched off.
+    #[serde(default)]
+    pub compare_fields_enabled: bool,
+
     #[serde(default)]
     pub recent_runs: Vec<RecentRun>,
 
@@ -87,6 +93,7 @@ impl Default for AppSettings {
                 "tensor_parallel_size".to_string(),
                 "env:VLLM_ROCM_USE_AITER".to_string(),
             ],
+            compare_fields_enabled: false,
             recent_runs: Vec::new(),
             control_concurrency: default_control_concurrency(),
             blob_concurrency: default_blob_concurrency(),
@@ -111,6 +118,16 @@ impl AppSettings {
             self.token = None;
         }
         self
+    }
+
+    /// The comparison fields to actually join on, which is none while the
+    /// feature is switched off.
+    pub fn active_compare_fields(&self) -> Vec<String> {
+        if self.compare_fields_enabled {
+            self.compare_fields.clone()
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn push_recent(&mut self, run_id: &str, run_name: &str) {
@@ -144,6 +161,7 @@ pub struct SettingsView {
     pub theme: String,
     pub default_metric: String,
     pub compare_fields: Vec<String>,
+    pub compare_fields_enabled: bool,
     pub recent_runs: Vec<RecentRun>,
     pub control_concurrency: usize,
     pub blob_concurrency: usize,
@@ -172,6 +190,7 @@ impl SettingsView {
             theme: settings.theme.clone(),
             default_metric: settings.default_metric.clone(),
             compare_fields: settings.compare_fields.clone(),
+            compare_fields_enabled: settings.compare_fields_enabled,
             recent_runs: settings.recent_runs.clone(),
             control_concurrency: settings.control_concurrency,
             blob_concurrency: settings.blob_concurrency,
@@ -406,6 +425,41 @@ mod tests {
         assert_eq!(settings.blob_concurrency, 1);
         assert_eq!(settings.cache_cap_mb, 8);
         assert_eq!(settings.theme, "system");
+    }
+
+    // The field list is remembered while the feature is off, so switching it back
+    // on restores the columns the user had configured.
+    #[test]
+    fn comparison_fields_are_off_by_default_but_still_configured() {
+        let settings = AppSettings::default();
+        assert!(!settings.compare_fields_enabled);
+        assert!(settings.active_compare_fields().is_empty());
+        assert!(!settings.compare_fields.is_empty());
+
+        let enabled = AppSettings {
+            compare_fields_enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(enabled.active_compare_fields(), enabled.compare_fields);
+    }
+
+    // A settings file written before the flag existed must load as off.
+    #[test]
+    fn a_settings_file_without_the_flag_loads_as_off() {
+        let stored: AppSettings =
+            serde_json::from_str(r#"{"host":"","compare_fields":["tensor_parallel_size"]}"#)
+                .unwrap();
+        assert!(!stored.compare_fields_enabled);
+
+        let round_tripped: AppSettings = serde_json::from_str(
+            &serde_json::to_string(&AppSettings {
+                compare_fields_enabled: true,
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(round_tripped.compare_fields_enabled);
     }
 
     #[test]

@@ -15,7 +15,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/primitives";
-import { availableCases, useStore } from "@/store/session";
+import { availableCases, effectiveLabels, taggedLabels, useStore } from "@/store/session";
 import { METRIC_LABELS, type Aggregation, type MetricKey, type XAxis } from "@/types";
 
 // Charts are the single largest dependency, and are not needed to render the
@@ -63,6 +63,19 @@ export function ResultsPanel() {
   const parsedSla = Number.parseFloat(tpotSla);
   const tpotSlaMs = Number.isFinite(parsedSla) && parsedSla > 0 ? parsedSla : undefined;
 
+  const labels = useMemo(() => taggedLabels(sides), [sides]);
+  // The footer names both sides in prose, where the A/B tags read as noise.
+  const footerLabels = useMemo(() => effectiveLabels(sides), [sides]);
+
+  // Series names come from the backend's derived labels, which collide when both
+  // sides are the same run or share a run name. ECharts would then merge them
+  // into one legend entry, so the tagged names are substituted here.
+  const namedCurves = useMemo(() => {
+    if (!curves) return null;
+    const names = [labels.a, labels.b ?? ""];
+    return curves.map((entry, index) => ({ ...entry, label: names[index] || entry.label }));
+  }, [curves, labels]);
+
   /**
    * Grabs the chart's canvas and saves it.
    *
@@ -83,12 +96,12 @@ export function ResultsPanel() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${table?.label_a ?? "chart"}.png`.replace(/[^\w.-]+/g, "_");
+      link.download = `${effectiveLabels(sides).a || "chart"}.png`.replace(/[^\w.-]+/g, "_");
       link.click();
       URL.revokeObjectURL(url);
       store.toast("success", "Chart saved to your downloads folder.");
     }, "image/png");
-  }, [store, table?.label_a]);
+  }, [store, sides]);
 
   const hasData = sides.a.data !== null;
 
@@ -208,7 +221,7 @@ export function ResultsPanel() {
                   }
                 >
                   <ParetoChart
-                    series={curves}
+                    series={namedCurves ?? curves}
                     metric={metric}
                     xAxis={xAxis}
                     logX={logX}
@@ -229,9 +242,7 @@ export function ResultsPanel() {
       <div className="flex shrink-0 items-center gap-2 border-t border-border px-3 py-2">
         {table && (
           <span className="truncate text-xs text-muted">
-            {table.label_b
-              ? `${table.label_a}  vs  ${table.label_b}`
-              : table.label_a}
+            {footerLabels.b ? `${footerLabels.a}  vs  ${footerLabels.b}` : footerLabels.a}
           </span>
         )}
         <div className="ml-auto">

@@ -3,7 +3,7 @@ import { useMemo, useRef } from "react";
 
 import { Badge, EmptyState } from "@/components/ui/primitives";
 import { cn, formatMetric, formatPercent } from "@/lib/utils";
-import { useStore } from "@/store/session";
+import { taggedLabels, useStore } from "@/store/session";
 import { METRIC_LABELS, type ComparisonRow, type ComparisonTable as Table, type MetricKey } from "@/types";
 
 const ROW_HEIGHT = 30;
@@ -21,6 +21,7 @@ const LOWER_IS_BETTER: ReadonlySet<string> = new Set([
 export function ComparisonTable({ table }: { table: Table }) {
   const { metric, sides } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const labels = useMemo(() => taggedLabels(sides), [sides]);
 
   const hasB = table.label_b !== null;
   const fieldCount = table.field_headers.length;
@@ -76,15 +77,15 @@ export function ComparisonTable({ table }: { table: Table }) {
                 case
               </Th>
               <Th colSpan={fieldCount + metricCount} className="th-a-group text-accent">
-                <span className="truncate" title={table.label_a}>
-                  {table.label_a}
+                <span className="truncate" title={labels.a}>
+                  {labels.a}
                 </span>
               </Th>
               {hasB && (
                 <>
                   <Th colSpan={fieldCount + metricCount} className="bg-raised">
-                    <span className="truncate" title={table.label_b ?? ""}>
-                      {table.label_b}
+                    <span className="truncate" title={labels.b ?? ""}>
+                      {labels.b}
                     </span>
                   </Th>
                   <Th rowSpan={2} className="bg-raised">
