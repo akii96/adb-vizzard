@@ -10,9 +10,12 @@ import { METRIC_LABELS, type ChildRun, type MetricKey, type SideData } from "@/t
 export function RawRuns() {
   const { sides } = useStore();
   const loaded = [
-    ["A", sides.a.data] as const,
-    ["B", sides.b.data] as const,
-  ].filter((entry): entry is readonly ["A" | "B", SideData] => entry[1] !== null);
+    ["A", sides.a] as const,
+    ["B", sides.b] as const,
+  ].filter(
+    (entry): entry is readonly ["A" | "B", (typeof sides)["a"] & { data: SideData }] =>
+      entry[1].data !== null,
+  );
 
   if (loaded.length === 0) {
     return <EmptyState title="Nothing loaded yet" />;
@@ -20,32 +23,48 @@ export function RawRuns() {
 
   return (
     <div className="h-full overflow-y-auto p-3">
-      {loaded.map(([name, data]) => (
-        <section key={name} className="mb-4 last:mb-0">
-          <div className="mb-1.5 flex items-center gap-2">
-            <Badge tone={name === "A" ? "accent" : "neutral"}>{name}</Badge>
-            <span className="truncate text-sm font-medium">{data.label}</span>
-            <span className="shrink-0 text-xs text-muted">{data.children.length} runs</span>
-          </div>
-          <ul className="space-y-1">
-            {data.children.map((child) => (
-              <RunNode key={child.run_id} child={child} />
-            ))}
-          </ul>
-        </section>
-      ))}
+      {loaded.map(([name, side]) => {
+        const { data, excluded } = side;
+        const included = data.children.length - excluded.size;
+
+        return (
+          <section key={name} className="mb-4 last:mb-0">
+            <div className="mb-1.5 flex items-center gap-2">
+              <Badge tone={name === "A" ? "accent" : "neutral"}>{name}</Badge>
+              <span className="truncate text-sm font-medium">{data.label}</span>
+              <span className="shrink-0 text-xs text-muted">
+                {excluded.size > 0
+                  ? `${included} of ${data.children.length} runs`
+                  : `${data.children.length} runs`}
+              </span>
+            </div>
+            <ul className="space-y-1">
+              {data.children.map((child) => (
+                <RunNode
+                  key={child.run_id}
+                  child={child}
+                  excluded={excluded.has(child.run_id)}
+                />
+              ))}
+            </ul>
+          </section>
+        );
+      })}
     </div>
   );
 }
 
-function RunNode({ child }: { child: ChildRun }) {
+function RunNode({ child, excluded }: { child: ChildRun; excluded: boolean }) {
   const [open, setOpen] = useState(false);
 
   const flags = Object.entries(child.metadata.flags);
   const envVars = Object.entries(child.metadata.env_vars);
 
   return (
-    <li className="overflow-hidden rounded-lg border border-border">
+    // Unticked runs stay listed rather than disappearing, since this tab is the
+    // inventory of what was loaded, but they are dimmed to show they contribute
+    // to nothing downstream.
+    <li className={cn("overflow-hidden rounded-lg border border-border", excluded && "opacity-40")}>
       <button
         onClick={() => setOpen((value) => !value)}
         className="flex w-full items-center gap-2 bg-raised/40 px-2.5 py-1.5 text-left transition-colors hover:bg-raised"
@@ -53,11 +72,14 @@ function RunNode({ child }: { child: ChildRun }) {
         <ChevronRight
           className={cn("h-3.5 w-3.5 shrink-0 text-muted transition-transform", open && "rotate-90")}
         />
-        <span className="tabular shrink-0 text-xs font-medium">{child.group}</span>
+        <span className={cn("tabular shrink-0 text-xs font-medium", excluded && "line-through")}>
+          {child.group}
+        </span>
         <span className="tabular shrink-0 text-[11px] text-muted">mc{child.concurrency}</span>
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted" title={child.run_name}>
           {child.run_name}
         </span>
+        {excluded && <span className="shrink-0 text-[11px] text-muted">excluded</span>}
       </button>
 
       {open && (

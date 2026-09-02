@@ -82,24 +82,47 @@ export async function clearSide(side: Side): Promise<void> {
   return invoke("clear_side", { side });
 }
 
-export async function buildComparison(args: {
-  compareFields?: string[];
-  aggregation: Aggregation;
-}): Promise<ComparisonTable> {
+/**
+ * Run IDs the user unticked in the case list.
+ *
+ * Sent on every request that derives something from the loaded runs, so the
+ * table, the curves and the exports cannot disagree about what is included.
+ */
+export interface ExcludedRuns {
+  excludedA?: string[];
+  excludedB?: string[];
+}
+
+function excludedPayload(args: ExcludedRuns) {
+  return {
+    excluded_a: args.excludedA ?? [],
+    excluded_b: args.excludedB ?? [],
+  };
+}
+
+export async function buildComparison(
+  args: ExcludedRuns & {
+    compareFields?: string[];
+    aggregation: Aggregation;
+  },
+): Promise<ComparisonTable> {
   return invoke("build_comparison", {
     args: {
       compare_fields: args.compareFields ?? null,
       aggregation: args.aggregation,
+      ...excludedPayload(args),
     },
   });
 }
 
-export async function buildCurves(args: {
-  metric: MetricKey;
-  xAxis: XAxis;
-  aggregation: Aggregation;
-  case?: CurveCase | null;
-}): Promise<CurveSeries[]> {
+export async function buildCurves(
+  args: ExcludedRuns & {
+    metric: MetricKey;
+    xAxis: XAxis;
+    aggregation: Aggregation;
+    case?: CurveCase | null;
+  },
+): Promise<CurveSeries[]> {
   return invoke("build_curves", {
     args: {
       metric: args.metric,
@@ -107,17 +130,20 @@ export async function buildCurves(args: {
       aggregation: args.aggregation,
       input_len: args.case?.inputLen ?? null,
       output_len: args.case?.outputLen ?? null,
+      ...excludedPayload(args),
     },
   });
 }
 
-export async function exportFile(args: {
-  kind: ExportKind;
-  path: string;
-  compareFields?: string[];
-  aggregation: Aggregation;
-  options?: ExportOptions;
-}): Promise<string> {
+export async function exportFile(
+  args: ExcludedRuns & {
+    kind: ExportKind;
+    path: string;
+    compareFields?: string[];
+    aggregation: Aggregation;
+    options?: ExportOptions;
+  },
+): Promise<string> {
   return invoke("export", {
     args: {
       kind: args.kind,
@@ -125,8 +151,32 @@ export async function exportFile(args: {
       compare_fields: args.compareFields ?? null,
       aggregation: args.aggregation,
       options: args.options ?? null,
+      ...excludedPayload(args),
     },
   });
+}
+
+/** The comparison rendered as markdown, for the clipboard. */
+export async function comparisonMarkdown(
+  args: ExcludedRuns & {
+    compareFields?: string[];
+    aggregation: Aggregation;
+    options?: ExportOptions;
+  },
+): Promise<string> {
+  return invoke("comparison_markdown", {
+    args: {
+      compare_fields: args.compareFields ?? null,
+      aggregation: args.aggregation,
+      options: args.options ?? null,
+      ...excludedPayload(args),
+    },
+  });
+}
+
+/** Exchanges the loaded sides in the backend. Requires both to be loaded. */
+export async function swapSides(): Promise<void> {
+  return invoke("swap_sides");
 }
 
 export async function saveSettings(patch: {

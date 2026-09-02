@@ -1,10 +1,12 @@
-import { BarChart3, Loader2 } from "lucide-react";
+import { ArrowLeftRight, BarChart3, Loader2 } from "lucide-react";
 import { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
 
 import { ComparisonTable } from "@/components/ComparisonTable";
 import { ExportMenu } from "@/components/ExportMenu";
+import { MetricPicker } from "@/components/MetricPicker";
 import { RawRuns } from "@/components/RawRuns";
 import {
+  Button,
   Checkbox,
   EmptyState,
   Input,
@@ -104,6 +106,9 @@ export function ResultsPanel() {
   }, [store, sides]);
 
   const hasData = sides.a.data !== null;
+  // A one-sided swap would just unload the side that was there.
+  const canSwap =
+    sides.a.data !== null && sides.b.data !== null && !sides.a.loading && !sides.b.loading;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -115,8 +120,24 @@ export function ResultsPanel() {
             <TabsTrigger value="raw">Raw runs</TabsTrigger>
           </TabsList>
 
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!canSwap}
+            onClick={() => void store.swap()}
+            title={
+              canSwap
+                ? "Swap A and B, including their case selections and labels"
+                : "Load both sides to swap them"
+            }
+          >
+            <ArrowLeftRight className="h-3.5 w-3.5" />
+            Swap
+          </Button>
+
           <div className="ml-auto flex items-center gap-2">
             {tableLoading && <Spinner className="h-3.5 w-3.5 text-accent" />}
+            {tab === "table" && <MetricPicker />}
             <label className="flex items-center gap-1.5 text-[11px] text-muted">
               {tab === "curves" ? "y" : "metric"}
               <Select

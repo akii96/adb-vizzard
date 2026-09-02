@@ -211,12 +211,18 @@ export interface MetricInfo {
   lower_is_better: boolean;
 }
 
-export type ExportKind = "comparison_csv" | "comparison_xlsx" | "raw_csv";
+export type ExportKind =
+  | "comparison_csv"
+  | "comparison_xlsx"
+  | "comparison_markdown"
+  | "raw_csv";
 
 export interface ExportOptions {
   label_a?: string | null;
   label_b?: string | null;
   ratio_metrics?: string[];
+  /** Metric columns to emit per side. Empty means all six. */
+  metric_keys?: string[];
 }
 
 /** Display names for the six metric columns. */

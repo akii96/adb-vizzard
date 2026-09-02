@@ -122,7 +122,14 @@ async fn main() {
         "{:<20} {:>6} {:>12} {:>12} {:>12}",
         "group", "conc", "out tok/s", "tpot ms", "ttft ms"
     );
-    let table = build_table(&side, None, &[], Aggregation::Median);
+    let table = build_table(
+        &side,
+        None,
+        &[],
+        Aggregation::Median,
+        &std::collections::HashSet::new(),
+        &std::collections::HashSet::new(),
+    );
     for row in &table.rows {
         if let Some(cell) = &row.a {
             println!(

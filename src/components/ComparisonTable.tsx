@@ -25,27 +25,23 @@ const LOWER_IS_BETTER: ReadonlySet<string> = new Set([
 ]);
 
 export function ComparisonTable({ table }: { table: Table }) {
-  const { metric, sides } = useStore();
+  const { metric, visibleMetrics, sides } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const labels = useMemo(() => taggedLabels(sides), [sides]);
 
   const hasB = table.label_b !== null;
   const fieldCount = table.field_headers.length;
-  const metricCount = table.metric_keys.length;
 
-  // Only the excluded set changes often, so keep the filter memoized on it.
-  const rows = useMemo(() => {
-    const excludedA = sides.a.excluded;
-    const excludedB = sides.b.excluded;
-    if (excludedA.size === 0 && excludedB.size === 0) return table.rows;
+  // The backend always sends all six; the picker decides which are shown, and
+  // each shown metric also earns an A/B column.
+  const metricKeys = useMemo(
+    () => table.metric_keys.filter((key) => visibleMetrics.includes(key)),
+    [table.metric_keys, visibleMetrics],
+  );
+  const metricCount = metricKeys.length;
 
-    // A row survives if at least one of its sides still has an included run.
-    return table.rows.filter((row) => {
-      const aLives = row.a ? row.a.run_ids.some((id) => !excludedA.has(id)) : false;
-      const bLives = row.b ? row.b.run_ids.some((id) => !excludedB.has(id)) : false;
-      return aLives || bLives;
-    });
-  }, [table.rows, sides.a.excluded, sides.b.excluded]);
+  // Excluded runs are filtered in the backend now, so these rows are final.
+  const rows = table.rows;
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -58,7 +54,8 @@ export function ComparisonTable({ table }: { table: Table }) {
     return <EmptyState title="No rows to compare" hint="Every case was unticked." />;
   }
 
-  const totalColumns = 3 + fieldCount + metricCount + (hasB ? fieldCount + metricCount + 1 : 0);
+  const totalColumns =
+    3 + fieldCount + metricCount + (hasB ? fieldCount + metricCount * 2 : 0);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -66,9 +63,11 @@ export function ComparisonTable({ table }: { table: Table }) {
         <Badge tone="good">{table.matched_rows} matched</Badge>
         {table.a_only_rows > 0 && <Badge tone="warn">{table.a_only_rows} A only</Badge>}
         {table.b_only_rows > 0 && <Badge tone="warn">{table.b_only_rows} B only</Badge>}
-        <span className="ml-auto text-[11px] text-muted">
-          ratio column shows A / B for {METRIC_LABELS[metric]}
-        </span>
+        {hasB && (
+          <span className="ml-auto text-[11px] text-muted">
+            A/B columns show A as a percentage of B
+          </span>
+        )}
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
@@ -94,7 +93,7 @@ export function ComparisonTable({ table }: { table: Table }) {
                       {labels.b}
                     </span>
                   </Th>
-                  <Th rowSpan={2} className="bg-raised">
+                  <Th colSpan={metricCount} className="bg-raised">
                     A vs B
                   </Th>
                 </>
@@ -107,7 +106,7 @@ export function ComparisonTable({ table }: { table: Table }) {
                   {header}
                 </Th>
               ))}
-              {table.metric_keys.map((key) => (
+              {metricKeys.map((key) => (
                 <Th key={`a-${key}`} className="th-a-col text-accent/90">
                   {METRIC_LABELS[key]}
                 </Th>
@@ -119,9 +118,19 @@ export function ComparisonTable({ table }: { table: Table }) {
                   </Th>
                 ))}
               {hasB &&
-                table.metric_keys.map((key) => (
+                metricKeys.map((key) => (
                   <Th key={`b-${key}`} className="bg-raised">
                     {METRIC_LABELS[key]}
+                  </Th>
+                ))}
+              {hasB &&
+                metricKeys.map((key) => (
+                  <Th
+                    key={`ratio-${key}`}
+                    className="bg-raised"
+                    title={`A / B for ${METRIC_LABELS[key]}, as a percentage`}
+                  >
+                    A/B {METRIC_LABELS[key]}
                   </Th>
                 ))}
             </tr>
@@ -140,7 +149,7 @@ export function ComparisonTable({ table }: { table: Table }) {
                 <Row
                   key={`${row.group}-${row.concurrency}`}
                   row={row}
-                  metricKeys={table.metric_keys}
+                  metricKeys={metricKeys}
                   fieldHeaders={table.field_headers}
                   hasB={hasB}
                   primaryMetric={metric}
@@ -167,16 +176,19 @@ function Th({
   className,
   colSpan,
   rowSpan,
+  title,
 }: {
   children?: React.ReactNode;
   className?: string;
   colSpan?: number;
   rowSpan?: number;
+  title?: string;
 }) {
   return (
     <th
       colSpan={colSpan}
       rowSpan={rowSpan}
+      title={title}
       className={cn(
         "sticky top-0 border-b border-r border-border px-2 py-1.5 text-center text-[11px] font-semibold",
         className,
@@ -245,7 +257,9 @@ function Row({
               <Estimated cell={row.b} metricKey={key} />
             </Td>
           ))}
-          <RatioCell value={row.ratios[primaryMetric]} metric={primaryMetric} />
+          {metricKeys.map((key) => (
+            <RatioCell key={`ratio-${key}`} value={row.ratios[key]} metric={key} />
+          ))}
         </>
       )}
     </tr>

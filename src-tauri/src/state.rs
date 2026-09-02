@@ -108,6 +108,24 @@ impl AppState {
         self.sides.write().await.remove(side.as_str());
     }
 
+    /// Exchanges the two sides. Returns false, changing nothing, when either is
+    /// missing, since a one-sided swap would just unload the side that was there.
+    pub async fn swap_sides(&self) -> bool {
+        let mut sides = self.sides.write().await;
+
+        // Both removals have to be known safe before either happens, or a missing
+        // B would leave A removed and nothing put back.
+        if !sides.contains_key(Side::A.as_str()) || !sides.contains_key(Side::B.as_str()) {
+            return false;
+        }
+
+        let a = sides.remove(Side::A.as_str()).expect("checked above");
+        let b = sides.remove(Side::B.as_str()).expect("checked above");
+        sides.insert(Side::A.as_str(), b);
+        sides.insert(Side::B.as_str(), a);
+        true
+    }
+
     /// Resolves the artifact transport once per session by probing the batched
     /// credential endpoint, then caches the answer.
     pub async fn transport_for(&self, session: &Session, run_id: &str) -> ArtifactTransport {

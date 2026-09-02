@@ -5,10 +5,11 @@
 //! credentials or network. Expected values are taken from the fixture artifacts
 //! in `fixtures/`, rounded exactly the way `adb-summarize` rounds them.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use adb_vizzard::comparator::{build_table, Aggregation};
+use adb_vizzard::comparator::{build_table, Aggregation, ComparisonTable};
 use adb_vizzard::exporter::{
     write_comparison_csv, write_comparison_xlsx, write_raw_csv, ExportOptions,
 };
@@ -47,6 +48,18 @@ fn load(parent: &str) -> SideData {
 
 fn temp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("adb-vizzard-golden-{}-{name}", std::process::id()))
+}
+
+/// Median comparison with nothing unticked, which is what these fixtures check.
+fn compare(a: &SideData, b: Option<&SideData>, fields: &[String]) -> ComparisonTable {
+    build_table(
+        a,
+        b,
+        fields,
+        Aggregation::Median,
+        &HashSet::new(),
+        &HashSet::new(),
+    )
 }
 
 #[test]
@@ -197,7 +210,7 @@ fn compares_the_two_parents_on_group_and_concurrency() {
         "env:VLLM_ROCM_USE_AITER".to_string(),
         "env:NOT_SET_ANYWHERE".to_string(),
     ];
-    let table = build_table(&amd, Some(&oai), &fields, Aggregation::Median);
+    let table = compare(&amd, Some(&oai), &fields);
 
     // Both children are in1000_out100 at concurrency 16, so they join into one row.
     assert_eq!(table.rows.len(), 1);
@@ -311,7 +324,7 @@ fn compares_across_the_two_harnesses() {
     let vllm = load(AMD_PARENT);
     let sglang = load_sglang();
 
-    let table = build_table(&vllm, Some(&sglang), &[], Aggregation::Median);
+    let table = compare(&vllm, Some(&sglang), &[]);
 
     // Different input/output lengths, so nothing joins; both sides still appear.
     assert_eq!(table.matched_rows, 0);
@@ -325,7 +338,7 @@ fn exports_the_fixture_comparison_to_csv() {
     let amd = load(AMD_PARENT);
     let oai = load(OAI_PARENT);
     let fields = vec!["tensor_parallel_size".to_string()];
-    let table = build_table(&amd, Some(&oai), &fields, Aggregation::Median);
+    let table = compare(&amd, Some(&oai), &fields);
 
     let path = temp_path("compare.csv");
     write_comparison_csv(&path, &table, &ExportOptions::default()).unwrap();
@@ -358,7 +371,7 @@ fn exports_the_fixture_comparison_to_csv() {
 fn exports_the_fixture_comparison_to_xlsx_and_raw_csv() {
     let amd = load(AMD_PARENT);
     let oai = load(OAI_PARENT);
-    let table = build_table(&amd, Some(&oai), &[], Aggregation::Median);
+    let table = compare(&amd, Some(&oai), &[]);
 
     let xlsx = temp_path("compare.xlsx");
     write_comparison_xlsx(&xlsx, &table, &ExportOptions::default()).unwrap();
@@ -367,7 +380,8 @@ fn exports_the_fixture_comparison_to_xlsx_and_raw_csv() {
     let _ = std::fs::remove_file(xlsx);
 
     let raw = temp_path("raw.csv");
-    write_raw_csv(&raw, &[("A", &amd), ("B", &oai)]).unwrap();
+    let none = HashSet::new();
+    write_raw_csv(&raw, &[("A", &amd, &none), ("B", &oai, &none)]).unwrap();
     let text = std::fs::read_to_string(&raw).unwrap();
     let lines: Vec<&str> = text.lines().collect();
 

@@ -77,6 +77,8 @@ pub fn run() {
             commands::build_comparison,
             commands::build_curves,
             commands::export,
+            commands::comparison_markdown,
+            commands::swap_sides,
             commands::save_settings,
             commands::cache_stats,
             commands::clear_cache,

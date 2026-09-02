@@ -5,7 +5,7 @@
 //! dropped. Row order matches the CLI and the example CSV:
 //! `(input_len, output_len, concurrency)`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::Serialize;
 
@@ -81,20 +81,27 @@ pub struct ComparisonTable {
 }
 
 /// Joins one or two sides into a table.
+///
+/// `excluded_a` and `excluded_b` are the run IDs the user unticked in the case
+/// list. They are filtered here rather than on the frontend because a cell can
+/// aggregate several children, so dropping one changes the aggregate rather than
+/// just removing a row.
 pub fn build_table(
     a: &SideData,
     b: Option<&SideData>,
     compare_fields: &[String],
     aggregation: Aggregation,
+    excluded_a: &HashSet<String>,
+    excluded_b: &HashSet<String>,
 ) -> ComparisonTable {
     let field_headers: Vec<String> = compare_fields
         .iter()
         .map(|f| parser::comparison_header(f).to_string())
         .collect();
 
-    let a_cells = group_side(&a.children, compare_fields, aggregation);
+    let a_cells = group_side(&a.children, compare_fields, aggregation, excluded_a);
     let b_cells = b
-        .map(|side| group_side(&side.children, compare_fields, aggregation))
+        .map(|side| group_side(&side.children, compare_fields, aggregation, excluded_b))
         .unwrap_or_default();
 
     // BTreeMap keys give a deterministic union; the explicit sort below then
@@ -158,10 +165,14 @@ fn group_side(
     children: &[ChildRun],
     compare_fields: &[String],
     aggregation: Aggregation,
+    excluded: &HashSet<String>,
 ) -> BTreeMap<RowKey, CellGroup> {
     let mut buckets: BTreeMap<RowKey, Vec<&ChildRun>> = BTreeMap::new();
 
     for child in children {
+        if excluded.contains(&child.run_id) {
+            continue;
+        }
         buckets
             .entry(RowKey {
                 input_len: child.input_len,
@@ -323,8 +334,9 @@ pub fn build_series(
     x_axis: XAxis,
     aggregation: Aggregation,
     case: Option<(i64, i64)>,
+    excluded: &HashSet<String>,
 ) -> CurveSeries {
-    let cells = group_side(&side.children, &[], aggregation);
+    let cells = group_side(&side.children, &[], aggregation, excluded);
 
     let mut points: Vec<CurvePoint> = cells
         .into_iter()
@@ -455,7 +467,14 @@ mod tests {
         let a = side("A", vec![child(1000, 100, 4, 200.0, 30.0)]);
         let b = side("B", vec![child(1000, 100, 4, 100.0, 60.0)]);
 
-        let table = build_table(&a, Some(&b), &[], Aggregation::Median);
+        let table = build_table(
+            &a,
+            Some(&b),
+            &[],
+            Aggregation::Median,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
 
         assert_eq!(table.rows.len(), 1);
         assert_eq!(table.matched_rows, 1);
@@ -483,7 +502,14 @@ mod tests {
             ],
         );
 
-        let table = build_table(&a, Some(&b), &[], Aggregation::Median);
+        let table = build_table(
+            &a,
+            Some(&b),
+            &[],
+            Aggregation::Median,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
 
         assert_eq!(table.rows.len(), 3);
         assert_eq!(table.matched_rows, 1);
@@ -508,7 +534,14 @@ mod tests {
             ],
         );
 
-        let table = build_table(&a, None, &[], Aggregation::Median);
+        let table = build_table(
+            &a,
+            None,
+            &[],
+            Aggregation::Median,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
         let order: Vec<(i64, i64, i64)> = table
             .rows
             .iter()
@@ -529,7 +562,14 @@ mod tests {
     #[test]
     fn single_side_table_has_no_b_column() {
         let a = side("A", vec![child(1000, 100, 4, 200.0, 30.0)]);
-        let table = build_table(&a, None, &[], Aggregation::Median);
+        let table = build_table(
+            &a,
+            None,
+            &[],
+            Aggregation::Median,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
         assert!(table.label_b.is_none());
         assert!(table.rows[0].b.is_none());
     }
@@ -543,28 +583,105 @@ mod tests {
         ];
         let a = side("A", children);
 
-        let median = build_table(&a, None, &[], Aggregation::Median);
+        let median = build_table(
+            &a,
+            None,
+            &[],
+            Aggregation::Median,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
         let cell = median.rows[0].a.as_ref().unwrap();
         assert_eq!(cell.metrics.output_throughput, 200.0);
         assert_eq!(cell.run_count, 3);
 
-        let mean = build_table(&a, None, &[], Aggregation::Mean);
-        assert_eq!(
-            mean.rows[0].a.as_ref().unwrap().metrics.output_throughput,
-            200.0
+        let throughput = |aggregation| {
+            build_table(&a, None, &[], aggregation, &HashSet::new(), &HashSet::new()).rows[0]
+                .a
+                .as_ref()
+                .unwrap()
+                .metrics
+                .output_throughput
+        };
+
+        assert_eq!(throughput(Aggregation::Mean), 200.0);
+        assert_eq!(throughput(Aggregation::Max), 300.0);
+        assert_eq!(throughput(Aggregation::Min), 100.0);
+    }
+
+    // Excluding a child has to change the aggregate, not just drop a row, which
+    // is why the filter lives here rather than in the table component.
+    #[test]
+    fn excluding_a_child_recomputes_the_aggregate() {
+        let children = vec![
+            child(1000, 100, 4, 100.0, 10.0),
+            child(1000, 100, 4, 200.0, 20.0),
+            child(1000, 100, 4, 300.0, 30.0),
+        ];
+        let slowest = children[0].run_id.clone();
+        let a = side("A", children);
+
+        let excluded: HashSet<String> = [slowest].into_iter().collect();
+        let table = build_table(
+            &a,
+            None,
+            &[],
+            Aggregation::Median,
+            &excluded,
+            &HashSet::new(),
         );
 
-        let max = build_table(&a, None, &[], Aggregation::Max);
-        assert_eq!(
-            max.rows[0].a.as_ref().unwrap().metrics.output_throughput,
-            300.0
+        let cell = table.rows[0].a.as_ref().unwrap();
+        // Median of the two survivors, not of all three.
+        assert_eq!(cell.metrics.output_throughput, 250.0);
+        assert_eq!(cell.run_count, 2);
+    }
+
+    #[test]
+    fn excluding_every_child_of_a_side_leaves_the_other_side_intact() {
+        let a = side("A", vec![child(1000, 100, 4, 200.0, 30.0)]);
+        let b = side("B", vec![child(1000, 100, 4, 100.0, 60.0)]);
+        let all_of_b: HashSet<String> = b.children.iter().map(|c| c.run_id.clone()).collect();
+
+        let table = build_table(
+            &a,
+            Some(&b),
+            &[],
+            Aggregation::Median,
+            &HashSet::new(),
+            &all_of_b,
         );
 
-        let min = build_table(&a, None, &[], Aggregation::Min);
-        assert_eq!(
-            min.rows[0].a.as_ref().unwrap().metrics.output_throughput,
-            100.0
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.matched_rows, 0);
+        assert_eq!(table.a_only_rows, 1);
+        assert!(table.rows[0].b.is_none());
+        assert!(table.rows[0].ratios.is_empty());
+    }
+
+    #[test]
+    fn excluded_children_are_dropped_from_the_curve() {
+        let a = side(
+            "A",
+            vec![
+                child(1000, 100, 4, 100.0, 10.0),
+                child(1000, 100, 8, 180.0, 12.0),
+                child(1000, 100, 16, 220.0, 20.0),
+            ],
         );
+        let excluded: HashSet<String> = [a.children[1].run_id.clone()].into_iter().collect();
+
+        let series = build_series(
+            &a,
+            "output_throughput",
+            XAxis::Concurrency,
+            Aggregation::Median,
+            None,
+            &excluded,
+        );
+
+        let xs: Vec<f64> = series.points.iter().map(|p| p.x).collect();
+        assert_eq!(xs, vec![4.0, 16.0]);
     }
 
     #[test]
@@ -579,7 +696,14 @@ mod tests {
         let a = side("A", vec![child(1000, 100, 4, 200.0, 30.0)]);
         let b = side("B", vec![child(1000, 100, 4, 0.0, 60.0)]);
 
-        let table = build_table(&a, Some(&b), &[], Aggregation::Median);
+        let table = build_table(
+            &a,
+            Some(&b),
+            &[],
+            Aggregation::Median,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
         let row = &table.rows[0];
         assert!(!row.ratios.contains_key("output_throughput"));
         // Other metrics with non-zero denominators still get a ratio.
@@ -595,7 +719,14 @@ mod tests {
             "env:NOT_PRESENT".to_string(),
         ];
 
-        let table = build_table(&a, None, &fields, Aggregation::Median);
+        let table = build_table(
+            &a,
+            None,
+            &fields,
+            Aggregation::Median,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
         assert_eq!(
             table.field_headers,
             vec!["tensor_parallel_size", "VLLM_ROCM_USE_AITER", "NOT_PRESENT"]
@@ -643,6 +774,7 @@ mod tests {
             XAxis::Concurrency,
             Aggregation::Median,
             None,
+            &HashSet::new(),
         );
         let flags: Vec<bool> = series.points.iter().map(|p| p.is_pareto).collect();
         assert_eq!(flags, vec![true, true, false, true]);
@@ -665,6 +797,7 @@ mod tests {
             XAxis::Concurrency,
             Aggregation::Median,
             None,
+            &HashSet::new(),
         );
         let flags: Vec<bool> = series.points.iter().map(|p| p.is_pareto).collect();
         // Lower TPOT is better, so only the descending points count.
@@ -686,6 +819,7 @@ mod tests {
             XAxis::Interactivity,
             Aggregation::Median,
             None,
+            &HashSet::new(),
         );
         let xs: Vec<f64> = series.points.iter().map(|p| p.x).collect();
         // 50 ms per token is 20 tok/s per user, 20 ms is 50 tok/s.
@@ -713,6 +847,7 @@ mod tests {
             XAxis::Interactivity,
             Aggregation::Median,
             None,
+            &HashSet::new(),
         );
         let flags: Vec<(f64, bool)> = series.points.iter().map(|p| (p.x, p.is_pareto)).collect();
         assert_eq!(
@@ -737,6 +872,7 @@ mod tests {
             XAxis::Concurrency,
             Aggregation::Median,
             Some((1000, 100)),
+            &HashSet::new(),
         );
         let xs: Vec<f64> = series.points.iter().map(|p| p.x).collect();
         assert_eq!(xs, vec![4.0, 8.0]);
@@ -749,7 +885,14 @@ mod tests {
         let a = side("A", vec![child(1000, 100, 8, 300.0, 35.0)]);
 
         for axis in [XAxis::Concurrency, XAxis::Interactivity] {
-            let series = build_series(&a, "output_throughput", axis, Aggregation::Median, None);
+            let series = build_series(
+                &a,
+                "output_throughput",
+                axis,
+                Aggregation::Median,
+                None,
+                &HashSet::new(),
+            );
             let point = &series.points[0];
             assert_eq!(point.input_len, 1000);
             assert_eq!(point.output_len, 100);
@@ -774,6 +917,7 @@ mod tests {
             XAxis::Concurrency,
             Aggregation::Median,
             None,
+            &HashSet::new(),
         );
         assert_eq!(series.points.len(), 1);
         assert_eq!(series.points[0].run_count, 2);

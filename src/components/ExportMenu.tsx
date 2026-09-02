@@ -1,10 +1,26 @@
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { Download, FileSpreadsheet, FileText, Image, Table2 } from "lucide-react";
+import {
+  Check,
+  Clipboard,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Hash,
+  Image,
+  Table2,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { Button, Input } from "@/components/ui/primitives";
+import { Button, Checkbox, Input } from "@/components/ui/primitives";
+import { copyText } from "@/lib/clipboard";
 import * as ipc from "@/lib/ipc";
-import { activeCompareFields, effectiveLabels, useStore } from "@/store/session";
+import {
+  ALL_METRICS,
+  activeCompareFields,
+  effectiveLabels,
+  excludedRuns,
+  useStore,
+} from "@/store/session";
 import type { ExportKind } from "@/types";
 
 const OPTIONS: Array<{
@@ -15,6 +31,14 @@ const OPTIONS: Array<{
   filterName: string;
   icon: typeof FileText;
 }> = [
+  {
+    kind: "comparison_markdown",
+    label: "Comparison Markdown",
+    hint: "pipe table for a PR body",
+    extension: "md",
+    filterName: "Markdown",
+    icon: Hash,
+  },
   {
     kind: "comparison_xlsx",
     label: "Comparison XLSX",
@@ -43,11 +67,15 @@ const OPTIONS: Array<{
 
 export function ExportMenu({ onExportChart }: { onExportChart: () => void }) {
   const store = useStore();
-  const { sides, aggregation, settings, toast } = store;
+  const { sides, aggregation, settings, visibleMetrics, toast } = store;
   const [open, setOpen] = useState(false);
+  /** Flips the copy row to a tick briefly, so a silent success is still visible. */
+  const [copied, setCopied] = useState(false);
+  const [trimmed, setTrimmed] = useState(true);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const disabled = !sides.a.data;
+  const narrowed = visibleMetrics.length < ALL_METRICS.length;
 
   // Editing here is the same edit as in the run panel, so a name typed before an
   // export also shows up in the table header and the chart legend.
@@ -61,6 +89,28 @@ export function ExportMenu({ onExportChart }: { onExportChart: () => void }) {
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [open]);
+
+  /**
+   * The metric columns an export should carry.
+   *
+   * Empty means "all six" to the backend, which is what the full export wants;
+   * the trimmed one mirrors whatever the table is currently showing. The same
+   * list drives the ratio columns, so an export cannot end up with a ratio for a
+   * metric whose values it left out.
+   */
+  function metricKeys(): string[] {
+    return trimmed && narrowed ? visibleMetrics : [];
+  }
+
+  function exportOptions() {
+    const keys = metricKeys();
+    return {
+      label_a: labels.a,
+      label_b: labels.b,
+      ratio_metrics: keys,
+      metric_keys: keys,
+    };
+  }
 
   async function run(option: (typeof OPTIONS)[number]) {
     try {
@@ -76,14 +126,27 @@ export function ExportMenu({ onExportChart }: { onExportChart: () => void }) {
         path,
         compareFields: activeCompareFields(settings),
         aggregation,
-        options: {
-          label_a: labels.a,
-          label_b: labels.b,
-          ratio_metrics: [],
-        },
+        options: exportOptions(),
+        ...excludedRuns(sides),
       });
       setOpen(false);
       toast("success", `Saved ${written}`);
+    } catch (error) {
+      toast("error", ipc.normalizeError(error).message);
+    }
+  }
+
+  async function copyMarkdown() {
+    try {
+      const text = await ipc.comparisonMarkdown({
+        compareFields: activeCompareFields(settings),
+        aggregation,
+        options: exportOptions(),
+        ...excludedRuns(sides),
+      });
+      await copyText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
     } catch (error) {
       toast("error", ipc.normalizeError(error).message);
     }
@@ -128,7 +191,43 @@ export function ExportMenu({ onExportChart }: { onExportChart: () => void }) {
             )}
           </div>
 
+          {narrowed && (
+            <div className="border-b border-border px-2.5 py-2">
+              <Checkbox
+                checked={trimmed}
+                onChange={setTrimmed}
+                label={
+                  <span className="text-xs">
+                    Only the {visibleMetrics.length} selected metrics
+                  </span>
+                }
+                description="Off exports all six, whatever the table is showing."
+              />
+            </div>
+          )}
+
           <ul>
+            <li className="border-b border-border">
+              <button
+                onClick={() => void copyMarkdown()}
+                className="flex w-full items-center gap-2.5 px-2.5 py-2 text-left transition-colors hover:bg-raised"
+              >
+                {copied ? (
+                  <Check className="h-4 w-4 shrink-0 text-good" />
+                ) : (
+                  <Clipboard className="h-4 w-4 shrink-0 text-muted" />
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs text-fg">
+                    {copied ? "Copied" : "Copy as Markdown"}
+                  </span>
+                  <span className="block text-[11px] text-muted">
+                    paste straight into a PR body
+                  </span>
+                </span>
+              </button>
+            </li>
+
             {OPTIONS.map((option) => {
               const Icon = option.icon;
               return (

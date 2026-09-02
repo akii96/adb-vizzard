@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import * as ipc from "@/lib/ipc";
 import { formatLaunchTime, shortRunId } from "@/lib/utils";
+import { METRIC_LABELS } from "@/types";
 import type {
   Aggregation,
   ComparisonTable,
@@ -22,6 +23,9 @@ export interface Toast {
   kind: "error" | "success" | "info";
   message: string;
 }
+
+/** The six metrics in canonical order, which is the default column selection. */
+export const ALL_METRICS = Object.keys(METRIC_LABELS) as MetricKey[];
 
 interface SideState {
   input: string;
@@ -67,6 +71,12 @@ interface Store {
   curves: CurveSeries[] | null;
 
   metric: MetricKey;
+  /**
+   * Metric columns shown in the table, each of which also gets an A/B ratio
+   * column. Session-only: persisting it would mean a settings schema change, and
+   * a narrowed view is usually wanted for one comparison rather than forever.
+   */
+  visibleMetrics: MetricKey[];
   xAxis: XAxis;
   /**
    * Workload plotted on the curves tab. Different input/output lengths have
@@ -89,11 +99,13 @@ interface Store {
   loadLocal: (side: Side, path: string) => Promise<void>;
   cancel: (side: Side) => Promise<void>;
   clear: (side: Side) => Promise<void>;
+  swap: () => Promise<void>;
   toggleChild: (side: Side, runId: string) => void;
   setAllChildren: (side: Side, included: boolean) => void;
   setLabelOverride: (side: Side, label: string | null) => void;
 
   setMetric: (metric: MetricKey) => void;
+  setVisibleMetrics: (metrics: MetricKey[]) => void;
   setXAxis: (axis: XAxis) => void;
   setCurveCase: (curveCase: CurveCase) => void;
   setAggregation: (aggregation: Aggregation) => void;
@@ -118,6 +130,7 @@ export const useStore = create<Store>((set, get) => ({
   curves: null,
 
   metric: "output_throughput",
+  visibleMetrics: ALL_METRICS,
   xAxis: "concurrency",
   curveCase: null,
   aggregation: "median",
@@ -239,6 +252,32 @@ export const useStore = create<Store>((set, get) => ({
     await get().refresh();
   },
 
+  /**
+   * Exchanges the two panels, for a pair loaded in the wrong order.
+   *
+   * The backend holds its own copy of each side, and every derived artifact is
+   * built from that copy, so the frontend swap alone would flip the labels while
+   * leaving the table and the curves as they were.
+   */
+  async swap() {
+    const { sides } = get();
+    if (!sides.a.data || !sides.b.data) return;
+
+    try {
+      await ipc.swapSides();
+    } catch (error) {
+      get().toast("error", ipc.normalizeError(error).message);
+      return;
+    }
+
+    // Re-read rather than reusing the snapshot above: the backend is already
+    // swapped, so anything that landed during the round trip has to be swapped
+    // along with it or the two copies would disagree about which side is which.
+    const current = get().sides;
+    set({ sides: { a: current.b, b: current.a } });
+    await get().refresh();
+  },
+
   toggleChild(side, runId) {
     set((state) => {
       const excluded = new Set(state.sides[side].excluded);
@@ -246,6 +285,7 @@ export const useStore = create<Store>((set, get) => ({
       else excluded.add(runId);
       return { sides: { ...state.sides, [side]: { ...state.sides[side], excluded } } };
     });
+    scheduleRefresh(get);
   },
 
   setAllChildren(side, included) {
@@ -256,6 +296,7 @@ export const useStore = create<Store>((set, get) => ({
         : new Set(data?.children.map((c) => c.run_id) ?? []);
       return { sides: { ...state.sides, [side]: { ...state.sides[side], excluded } } };
     });
+    scheduleRefresh(get);
   },
 
   setLabelOverride(side, label) {
@@ -266,6 +307,16 @@ export const useStore = create<Store>((set, get) => ({
     set({ metric });
     void ipc.saveSettings({ default_metric: metric }).catch(() => undefined);
     void get().refresh();
+  },
+
+  /**
+   * Purely a view concern: the backend always returns all six metrics, so this
+   * needs no refresh. An empty selection would leave a table of nothing but case
+   * keys, so it is ignored.
+   */
+  setVisibleMetrics(metrics) {
+    if (metrics.length === 0) return;
+    set({ visibleMetrics: ALL_METRICS.filter((key) => metrics.includes(key)) });
   },
 
   setXAxis(xAxis) {
@@ -304,14 +355,17 @@ export const useStore = create<Store>((set, get) => ({
       selected && cases.some((c) => sameCase(c, selected)) ? selected : (cases[0] ?? null);
     if (curveCase !== selected) set({ curveCase });
 
+    const excluded = excludedRuns(sides);
+
     set({ tableLoading: true });
     try {
       const [table, curves] = await Promise.all([
         ipc.buildComparison({
           compareFields: activeCompareFields(settings),
           aggregation,
+          ...excluded,
         }),
-        ipc.buildCurves({ metric, xAxis, aggregation, case: curveCase }),
+        ipc.buildCurves({ metric, xAxis, aggregation, case: curveCase, ...excluded }),
       ]);
       set({ table, curves, tableLoading: false });
     } catch (error) {
@@ -343,6 +397,29 @@ export const useStore = create<Store>((set, get) => ({
 }));
 
 type SetState = (updater: (state: Store) => Partial<Store>) => void;
+
+/**
+ * Coalesces the rebuilds triggered by ticking through a case list.
+ *
+ * Every toggle changes what the backend has to aggregate, so each one needs a
+ * round trip. Working down a list of forty cases would otherwise fire forty
+ * pairs of requests whose replies could land out of order.
+ */
+const REFRESH_DEBOUNCE_MS = 120;
+let refreshTimer: number | undefined;
+
+function scheduleRefresh(get: () => Store) {
+  window.clearTimeout(refreshTimer);
+  refreshTimer = window.setTimeout(() => void get().refresh(), REFRESH_DEBOUNCE_MS);
+}
+
+/** The unticked run IDs per side, in the shape the IPC layer wants. */
+export function excludedRuns(sides: Record<Side, SideState>) {
+  return {
+    excludedA: [...sides.a.excluded],
+    excludedB: [...sides.b.excluded],
+  };
+}
 
 function patchSide(set: SetState, side: Side, patch: Partial<SideState>) {
   set((state) => ({
@@ -454,10 +531,4 @@ function discriminator(side: SideState): string {
 
   if (launched.length > 0) return formatLaunchTime(Math.min(...launched));
   return shortRunId(data.run_id);
-}
-
-/** Children remaining after the user's checkbox selection. */
-export function includedChildren(side: SideState) {
-  if (!side.data) return [];
-  return side.data.children.filter((child) => !side.excluded.has(child.run_id));
 }

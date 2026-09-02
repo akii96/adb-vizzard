@@ -4,6 +4,7 @@
 //! token only leaves via `reveal_token`, and every error is redacted before it
 //! crosses the boundary.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -299,12 +300,44 @@ pub async fn clear_side(state: State<'_, AppState>, side: Side) -> AppResult<()>
     Ok(())
 }
 
+/// Run IDs the user unticked in the case list, one set per side.
+///
+/// Sent explicitly on every request that derives something from the loaded runs,
+/// for the same reason `compare_fields` is: the table, the curves and the
+/// exports must agree, and they cannot if the backend has to guess.
+#[derive(Debug, Default, Deserialize)]
+pub struct Excluded {
+    #[serde(default)]
+    pub excluded_a: Vec<String>,
+    #[serde(default)]
+    pub excluded_b: Vec<String>,
+}
+
+impl Excluded {
+    fn a(&self) -> HashSet<String> {
+        self.excluded_a.iter().cloned().collect()
+    }
+
+    fn b(&self) -> HashSet<String> {
+        self.excluded_b.iter().cloned().collect()
+    }
+
+    fn for_side(&self, side: Side) -> HashSet<String> {
+        match side {
+            Side::A => self.a(),
+            Side::B => self.b(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TableArgs {
     #[serde(default)]
     pub compare_fields: Option<Vec<String>>,
     #[serde(default)]
     pub aggregation: Aggregation,
+    #[serde(flatten)]
+    pub excluded: Excluded,
 }
 
 /// Joins whatever is loaded into the comparison table.
@@ -329,6 +362,8 @@ pub async fn build_comparison(
         b.as_ref(),
         &compare_fields,
         args.aggregation,
+        &args.excluded.a(),
+        &args.excluded.b(),
     ))
 }
 
@@ -345,6 +380,8 @@ pub struct CurveArgs {
     pub input_len: Option<i64>,
     #[serde(default)]
     pub output_len: Option<i64>,
+    #[serde(flatten)]
+    pub excluded: Excluded,
 }
 
 /// Builds one curve series per loaded side.
@@ -371,6 +408,7 @@ pub async fn build_curves(
                 args.x_axis,
                 args.aggregation,
                 case,
+                &args.excluded.for_side(side),
             ));
         }
     }
@@ -386,6 +424,7 @@ pub async fn build_curves(
 pub enum ExportKind {
     ComparisonCsv,
     ComparisonXlsx,
+    ComparisonMarkdown,
     RawCsv,
 }
 
@@ -399,6 +438,8 @@ pub struct ExportArgs {
     pub aggregation: Aggregation,
     #[serde(default)]
     pub options: Option<ExportOptions>,
+    #[serde(flatten)]
+    pub excluded: Excluded,
 }
 
 /// Writes an export to disk and returns the path written.
@@ -416,24 +457,39 @@ pub async fn export(state: State<'_, AppState>, args: ExportArgs) -> AppResult<S
     };
     let options = args.options.unwrap_or_default();
     let path = PathBuf::from(&args.path);
+    let (excluded_a, excluded_b) = (args.excluded.a(), args.excluded.b());
 
     // Writers are synchronous and can touch a few MB; keep them off the runtime.
     let written = tokio::task::spawn_blocking(move || -> AppResult<String> {
+        let table = || {
+            comparator::build_table(
+                &a,
+                b.as_ref(),
+                &compare_fields,
+                args.aggregation,
+                &excluded_a,
+                &excluded_b,
+            )
+        };
+
         match args.kind {
             ExportKind::ComparisonCsv => {
-                let table =
-                    comparator::build_table(&a, b.as_ref(), &compare_fields, args.aggregation);
-                exporter::write_comparison_csv(&path, &table, &options)?;
+                exporter::write_comparison_csv(&path, &table(), &options)?;
             }
             ExportKind::ComparisonXlsx => {
-                let table =
-                    comparator::build_table(&a, b.as_ref(), &compare_fields, args.aggregation);
-                exporter::write_comparison_xlsx(&path, &table, &options)?;
+                exporter::write_comparison_xlsx(&path, &table(), &options)?;
+            }
+            ExportKind::ComparisonMarkdown => {
+                let text = exporter::comparison_markdown(&table(), &options);
+                std::fs::write(&path, text).map_err(|e| {
+                    AppError::io(format!("could not write {}: {e}", path.display()))
+                })?;
             }
             ExportKind::RawCsv => {
-                let mut sides: Vec<(&str, &SideData)> = vec![("A", &a)];
+                let mut sides: Vec<(&str, &SideData, &HashSet<String>)> =
+                    vec![("A", &a, &excluded_a)];
                 if let Some(side_b) = b.as_ref() {
-                    sides.push(("B", side_b));
+                    sides.push(("B", side_b, &excluded_b));
                 }
                 exporter::write_raw_csv(&path, &sides)?;
             }
@@ -444,6 +500,68 @@ pub async fn export(state: State<'_, AppState>, args: ExportArgs) -> AppResult<S
     .map_err(|e| AppError::io(format!("export failed: {e}")))??;
 
     Ok(written)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MarkdownArgs {
+    #[serde(default)]
+    pub compare_fields: Option<Vec<String>>,
+    #[serde(default)]
+    pub aggregation: Aggregation,
+    #[serde(default)]
+    pub options: Option<ExportOptions>,
+    #[serde(flatten)]
+    pub excluded: Excluded,
+}
+
+/// Renders the comparison as markdown and returns it, for the clipboard.
+///
+/// Shares `exporter::comparison_markdown` with the file export so what is pasted
+/// into a PR body and what is saved to disk cannot drift.
+#[tauri::command]
+pub async fn comparison_markdown(
+    state: State<'_, AppState>,
+    args: MarkdownArgs,
+) -> AppResult<String> {
+    let a = state
+        .take_side(Side::A)
+        .await
+        .ok_or_else(|| AppError::EmptySide("side A".to_string()))?;
+    let b = state.take_side(Side::B).await;
+
+    let compare_fields = match args.compare_fields {
+        Some(fields) => fields,
+        None => state.settings_snapshot().await.active_compare_fields(),
+    };
+
+    let table = comparator::build_table(
+        &a,
+        b.as_ref(),
+        &compare_fields,
+        args.aggregation,
+        &args.excluded.a(),
+        &args.excluded.b(),
+    );
+
+    Ok(exporter::comparison_markdown(
+        &table,
+        &args.options.unwrap_or_default(),
+    ))
+}
+
+/// Exchanges the two sides, so a run loaded into the wrong panel is one click
+/// from being in the right one.
+///
+/// Requires both sides: moving A into an empty B would leave A unloaded, which
+/// every downstream command rejects with `EmptySide`.
+#[tauri::command]
+pub async fn swap_sides(state: State<'_, AppState>) -> AppResult<()> {
+    if !state.swap_sides().await {
+        return Err(AppError::EmptySide(
+            "both sides must be loaded to swap them".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -564,5 +682,62 @@ fn redact_error(client: &AdbClient, err: AppError) -> AppError {
         AppError::Api(msg) => AppError::Api(client.secrets().redact(&msg)),
         AppError::Parse(msg) => AppError::Parse(client.secrets().redact(&msg)),
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The exclusion sets are flattened into each argument struct, which is a wire
+    // format the frontend has to match exactly. A typo would deserialize as an
+    // empty set and silently stop filtering anything.
+    #[test]
+    fn curve_args_read_the_flattened_exclusion_sets() {
+        let args: CurveArgs = serde_json::from_str(
+            r#"{
+                "metric": "output_throughput",
+                "x_axis": "interactivity",
+                "aggregation": "median",
+                "input_len": 1000,
+                "output_len": 100,
+                "excluded_a": ["r1", "r2"],
+                "excluded_b": []
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(args.metric, "output_throughput");
+        assert_eq!(args.x_axis, XAxis::Interactivity);
+        assert_eq!(args.input_len, Some(1000));
+        assert_eq!(args.excluded.for_side(Side::A).len(), 2);
+        assert!(args.excluded.for_side(Side::B).is_empty());
+    }
+
+    #[test]
+    fn table_args_default_to_excluding_nothing() {
+        let args: TableArgs = serde_json::from_str(r#"{"aggregation": "mean"}"#).unwrap();
+
+        assert_eq!(args.aggregation, Aggregation::Mean);
+        assert!(args.excluded.a().is_empty());
+        assert!(args.excluded.b().is_empty());
+    }
+
+    #[test]
+    fn export_args_read_the_markdown_kind_and_metric_selection() {
+        let args: ExportArgs = serde_json::from_str(
+            r#"{
+                "kind": "comparison_markdown",
+                "path": "out.md",
+                "aggregation": "median",
+                "options": { "metric_keys": ["median_tpot_ms"] },
+                "excluded_a": ["r9"]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(matches!(args.kind, ExportKind::ComparisonMarkdown));
+        assert_eq!(args.options.unwrap().metric_keys, vec!["median_tpot_ms"]);
+        assert_eq!(args.excluded.excluded_a, vec!["r9"]);
     }
 }

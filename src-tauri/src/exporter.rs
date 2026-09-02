@@ -4,6 +4,7 @@
 //! example CSV uses, the same thing as XLSX with real merged cells, and a flat
 //! per-child CSV that stays column-compatible with `adb-summarize`.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook};
@@ -31,6 +32,9 @@ pub struct ExportOptions {
     /// Metrics to emit ratio columns for.
     #[serde(default)]
     pub ratio_metrics: Vec<String>,
+    /// Metric columns to emit per side. Empty means all six.
+    #[serde(default)]
+    pub metric_keys: Vec<String>,
 }
 
 impl Default for ExportOptions {
@@ -42,6 +46,7 @@ impl Default for ExportOptions {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            metric_keys: Vec::new(),
         }
     }
 }
@@ -55,6 +60,28 @@ impl ExportOptions {
                 .collect()
         } else {
             self.ratio_metrics.clone()
+        }
+    }
+
+    /// The metric columns to emit, always in the canonical order regardless of
+    /// the order the caller listed them in.
+    fn metrics(&self) -> Vec<String> {
+        if self.metric_keys.is_empty() {
+            return METRIC_KEYS.iter().map(|m| m.to_string()).collect();
+        }
+        let wanted: HashSet<&str> = self.metric_keys.iter().map(String::as_str).collect();
+        let selected: Vec<String> = METRIC_KEYS
+            .iter()
+            .filter(|key| wanted.contains(*key))
+            .map(|m| m.to_string())
+            .collect();
+
+        // A selection that matches nothing known would silently produce a table
+        // with no metric columns at all, which is never what was meant.
+        if selected.is_empty() {
+            METRIC_KEYS.iter().map(|m| m.to_string()).collect()
+        } else {
+            selected
         }
     }
 
@@ -77,8 +104,9 @@ impl ExportOptions {
 /// two formats cannot drift apart.
 struct Layout {
     field_headers: Vec<String>,
+    metric_keys: Vec<String>,
     ratio_metrics: Vec<String>,
-    /// Columns per side: comparison fields, then the six metrics.
+    /// Columns per side: comparison fields, then the selected metrics.
     side_span: usize,
     has_b: bool,
 }
@@ -86,10 +114,22 @@ struct Layout {
 impl Layout {
     fn new(table: &ComparisonTable, options: &ExportOptions) -> Self {
         let field_headers = table.field_headers.clone();
-        let side_span = field_headers.len() + METRIC_KEYS.len();
+        let metric_keys = options.metrics();
+        let side_span = field_headers.len() + metric_keys.len();
+
+        // Ratios for metrics that are not shown would be columns with no
+        // context, so the ratio set is intersected with the visible metrics.
+        let visible: HashSet<&str> = metric_keys.iter().map(String::as_str).collect();
+        let ratio_metrics: Vec<String> = options
+            .ratios()
+            .into_iter()
+            .filter(|m| visible.contains(m.as_str()))
+            .collect();
+
         Self {
             field_headers,
-            ratio_metrics: options.ratios(),
+            metric_keys,
+            ratio_metrics,
             side_span,
             has_b: table.label_b.is_some(),
         }
@@ -122,7 +162,7 @@ impl Layout {
         let mut row: Vec<String> = KEY_HEADERS.iter().map(|_| String::new()).collect();
         for _ in 0..(if self.has_b { 2 } else { 1 }) {
             row.extend(self.field_headers.iter().cloned());
-            row.extend(METRIC_KEYS.iter().map(|m| m.to_string()));
+            row.extend(self.metric_keys.iter().cloned());
         }
         if self.has_b {
             row.extend(self.ratio_metrics.iter().map(|m| format!("{m} %")));
@@ -135,13 +175,14 @@ impl Layout {
 ///
 /// An absent side yields `None` per column rather than a short vector, so a
 /// missing side leaves blank cells instead of shifting every column after it.
-fn metric_values(cell: Option<&CellGroup>) -> Vec<Option<f64>> {
+fn metric_values(cell: Option<&CellGroup>, layout: &Layout) -> Vec<Option<f64>> {
     match cell {
-        Some(cell) => METRIC_KEYS
+        Some(cell) => layout
+            .metric_keys
             .iter()
             .map(|key| cell.metrics.get(key))
             .collect(),
-        None => vec![None; METRIC_KEYS.len()],
+        None => vec![None; layout.metric_keys.len()],
     }
 }
 
@@ -213,7 +254,7 @@ pub fn write_comparison_csv(
         {
             record.extend(field_values(cell, &layout));
             record.extend(
-                metric_values(cell)
+                metric_values(cell, &layout)
                     .into_iter()
                     .map(|v| v.map(format_number).unwrap_or_default()),
             );
@@ -372,7 +413,7 @@ pub fn write_comparison_xlsx(
                 col += 1;
             }
 
-            for value in metric_values(cell) {
+            for value in metric_values(cell, &layout) {
                 match value {
                     Some(v) => sheet
                         .write_number_with_format(excel_row, col as u16, v, &number)
@@ -428,11 +469,147 @@ pub fn write_comparison_xlsx(
     Ok(())
 }
 
+/// Renders the comparison as a GitHub-flavoured markdown table.
+///
+/// Markdown has no merged or two-row headers, so the grouped header the CSV and
+/// XLSX use is flattened: side labels move to a line above the table and each
+/// column is prefixed with its side, which keeps the header cells narrow enough
+/// to read in a PR body.
+pub fn comparison_markdown(table: &ComparisonTable, options: &ExportOptions) -> String {
+    let layout = Layout::new(table, options);
+    let label_a = options.resolved_label_a(table);
+    let label_b = options.resolved_label_b(table);
+
+    let mut out = String::new();
+    out.push_str(&format!("**A** — {}\n", md_escape(&label_a)));
+    if layout.has_b {
+        if let Some(label) = &label_b {
+            out.push_str(&format!("**B** — {}\n", md_escape(label)));
+        }
+    }
+    out.push('\n');
+
+    // Alignment is built alongside the headers so the two cannot fall out of
+    // step: numbers read better right-aligned, but the comparison fields hold
+    // free text and look wrong pushed to the right.
+    const LEFT: &str = ":---";
+    const RIGHT: &str = "---:";
+
+    let mut headers: Vec<String> = vec!["ISL".into(), "OSL".into(), "conc".into()];
+    let mut alignments: Vec<String> = vec![RIGHT.into(); headers.len()];
+
+    for side in side_tags(&layout) {
+        headers.extend(
+            layout
+                .field_headers
+                .iter()
+                .map(|h| format!("{side} {}", md_escape(h))),
+        );
+        alignments.extend(layout.field_headers.iter().map(|_| LEFT.to_string()));
+
+        headers.extend(
+            layout
+                .metric_keys
+                .iter()
+                .map(|k| format!("{side} {}", metric_label(k))),
+        );
+        alignments.extend(layout.metric_keys.iter().map(|_| RIGHT.to_string()));
+    }
+
+    if layout.has_b {
+        headers.extend(
+            layout
+                .ratio_metrics
+                .iter()
+                .map(|k| format!("A/B {}", metric_label(k))),
+        );
+        alignments.extend(layout.ratio_metrics.iter().map(|_| RIGHT.to_string()));
+    }
+
+    out.push_str(&md_row(&headers));
+    out.push_str(&md_row(&alignments));
+
+    for row in &table.rows {
+        let mut cells: Vec<String> = vec![
+            row.input_len.to_string(),
+            row.output_len.to_string(),
+            row.concurrency.to_string(),
+        ];
+
+        for cell in [row.a.as_ref(), row.b.as_ref()]
+            .into_iter()
+            .take(if layout.has_b { 2 } else { 1 })
+        {
+            cells.extend(field_values(cell, &layout).into_iter().map(|value| {
+                if value.is_empty() {
+                    "—".to_string()
+                } else {
+                    md_escape(&value)
+                }
+            }));
+            cells.extend(
+                metric_values(cell, &layout)
+                    .into_iter()
+                    .map(|v| v.map(format_number).unwrap_or_else(|| "—".to_string())),
+            );
+        }
+
+        if layout.has_b {
+            for metric in &layout.ratio_metrics {
+                cells.push(match row.ratios.get(metric) {
+                    Some(value) => format!("{value:.1}%"),
+                    None => "—".to_string(),
+                });
+            }
+        }
+
+        out.push_str(&md_row(&cells));
+    }
+
+    out
+}
+
+/// Column prefixes, so a header reads `A TTFT (ms)` rather than repeating twice.
+fn side_tags(layout: &Layout) -> Vec<&'static str> {
+    if layout.has_b {
+        vec!["A", "B"]
+    } else {
+        vec!["A"]
+    }
+}
+
+fn md_row(cells: &[String]) -> String {
+    format!("| {} |\n", cells.join(" | "))
+}
+
+/// A pipe inside a cell would end the column early, and a backslash would eat
+/// the escape, so both are escaped. Newlines become spaces for the same reason.
+fn md_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace(['\n', '\r'], " ")
+}
+
+/// Display names matching the ones the UI shows, so a pasted table reads the
+/// same as the screen it was copied from.
+fn metric_label(key: &str) -> &str {
+    match key {
+        "median_itl_ms" => "ITL (ms)",
+        "median_ttft_ms" => "TTFT (ms)",
+        "median_tpot_ms" => "TPOT (ms)",
+        "median_e2el_ms" => "E2EL (ms)",
+        "output_throughput" => "Output tok/s",
+        "total_token_throughput" => "Total tok/s",
+        other => other,
+    }
+}
+
 /// Writes the flat per-child CSV.
 ///
 /// Column set matches `adb-summarize`'s summary output plus the side and run
 /// identity, and carries `benchmark_yaml_path` last for traceability.
-pub fn write_raw_csv(path: &Path, sides: &[(&str, &SideData)]) -> AppResult<()> {
+pub fn write_raw_csv(path: &Path, sides: &[(&str, &SideData, &HashSet<String>)]) -> AppResult<()> {
     let mut writer = csv::WriterBuilder::new()
         .from_path(path)
         .map_err(|e| AppError::io(format!("could not write {}: {e}", path.display())))?;
@@ -454,8 +631,12 @@ pub fn write_raw_csv(path: &Path, sides: &[(&str, &SideData)]) -> AppResult<()> 
         .write_record(&headers)
         .map_err(|e| AppError::io(e.to_string()))?;
 
-    for (side_name, side) in sides {
-        for child in &side.children {
+    for (side_name, side, excluded) in sides {
+        for child in side
+            .children
+            .iter()
+            .filter(|child| !excluded.contains(&child.run_id))
+        {
             let mut record: Vec<String> = vec![
                 (*side_name).to_string(),
                 side.label.clone(),
@@ -534,6 +715,19 @@ mod tests {
         }
     }
 
+    /// Table builder for the tests, which never exercise the exclusion filter;
+    /// that is covered in `comparator`.
+    fn table_of(a: &SideData, b: Option<&SideData>, fields: &[String]) -> ComparisonTable {
+        build_table(
+            a,
+            b,
+            fields,
+            Aggregation::Median,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+    }
+
     fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "adb-vizzard-export-{}-{name}",
@@ -546,7 +740,7 @@ mod tests {
         let a = side("MI355X", vec![child(4, 200.0), child(8, 300.0)]);
         let b = side("B200", vec![child(4, 100.0), child(8, 150.0)]);
         let fields = vec!["tensor_parallel_size".to_string()];
-        let table = build_table(&a, Some(&b), &fields, Aggregation::Median);
+        let table = table_of(&a, Some(&b), &fields);
 
         let path = temp_path("compare.csv");
         write_comparison_csv(&path, &table, &ExportOptions::default()).unwrap();
@@ -573,7 +767,7 @@ mod tests {
     #[test]
     fn single_side_csv_omits_the_b_block_and_ratios() {
         let a = side("Solo", vec![child(4, 200.0)]);
-        let table = build_table(&a, None, &[], Aggregation::Median);
+        let table = table_of(&a, None, &[]);
 
         let path = temp_path("solo.csv");
         write_comparison_csv(&path, &table, &ExportOptions::default()).unwrap();
@@ -591,7 +785,7 @@ mod tests {
     fn missing_side_leaves_blank_cells_rather_than_shifting_columns() {
         let a = side("A", vec![child(4, 200.0), child(8, 300.0)]);
         let b = side("B", vec![child(4, 100.0)]);
-        let table = build_table(&a, Some(&b), &[], Aggregation::Median);
+        let table = table_of(&a, Some(&b), &[]);
 
         let path = temp_path("ragged.csv");
         write_comparison_csv(&path, &table, &ExportOptions::default()).unwrap();
@@ -611,12 +805,12 @@ mod tests {
     fn label_overrides_win_over_derived_labels() {
         let a = side("derived-a", vec![child(4, 200.0)]);
         let b = side("derived-b", vec![child(4, 100.0)]);
-        let table = build_table(&a, Some(&b), &[], Aggregation::Median);
+        let table = table_of(&a, Some(&b), &[]);
 
         let options = ExportOptions {
             label_a: Some("Custom A".into()),
             label_b: Some("Custom B".into()),
-            ratio_metrics: vec![],
+            ..ExportOptions::default()
         };
 
         let path = temp_path("labels.csv");
@@ -633,9 +827,8 @@ mod tests {
     #[test]
     fn empty_ratio_metrics_fall_back_to_the_default_pair() {
         let options = ExportOptions {
-            label_a: None,
-            label_b: None,
             ratio_metrics: vec![],
+            ..ExportOptions::default()
         };
         assert_eq!(
             options.ratios(),
@@ -644,15 +837,31 @@ mod tests {
     }
 
     #[test]
+    fn selected_metrics_are_reordered_into_the_canonical_order() {
+        let options = ExportOptions {
+            metric_keys: vec!["output_throughput".into(), "median_ttft_ms".into()],
+            ..ExportOptions::default()
+        };
+        assert_eq!(
+            options.metrics(),
+            vec!["median_ttft_ms", "output_throughput"]
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_metric_selection_falls_back_to_all_six() {
+        let options = ExportOptions {
+            metric_keys: vec!["not_a_metric".into()],
+            ..ExportOptions::default()
+        };
+        assert_eq!(options.metrics().len(), 6);
+    }
+
+    #[test]
     fn xlsx_writes_a_readable_workbook() {
         let a = side("MI355X", vec![child(4, 200.0), child(8, 300.0)]);
         let b = side("B200", vec![child(4, 100.0)]);
-        let table = build_table(
-            &a,
-            Some(&b),
-            &["tensor_parallel_size".to_string()],
-            Aggregation::Median,
-        );
+        let table = table_of(&a, Some(&b), &["tensor_parallel_size".to_string()]);
 
         let path = temp_path("compare.xlsx");
         write_comparison_xlsx(&path, &table, &ExportOptions::default()).unwrap();
@@ -669,9 +878,10 @@ mod tests {
     fn raw_csv_has_one_row_per_child_from_both_sides() {
         let a = side("A", vec![child(4, 200.0), child(8, 300.0)]);
         let b = side("B", vec![child(4, 100.0)]);
+        let none = HashSet::new();
 
         let path = temp_path("raw.csv");
-        write_raw_csv(&path, &[("A", &a), ("B", &b)]).unwrap();
+        write_raw_csv(&path, &[("A", &a, &none), ("B", &b, &none)]).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text.lines().collect();
 
@@ -682,5 +892,111 @@ mod tests {
         assert!(lines[3].starts_with("B,"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn raw_csv_omits_unticked_children() {
+        let a = side("A", vec![child(4, 200.0), child(8, 300.0)]);
+        let excluded: HashSet<String> = ["run8".to_string()].into_iter().collect();
+
+        let path = temp_path("raw-filtered.csv");
+        write_raw_csv(&path, &[("A", &a, &excluded)]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(text.lines().count(), 2); // header + the one surviving child
+        assert!(text.contains("run4"));
+        assert!(!text.contains("run8"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn markdown_names_both_sides_and_emits_a_ratio_per_selected_metric() {
+        let a = side("MI355X", vec![child(4, 200.0), child(8, 300.0)]);
+        let b = side("B200", vec![child(4, 100.0), child(8, 150.0)]);
+        let table = table_of(&a, Some(&b), &[]);
+
+        let options = ExportOptions {
+            metric_keys: vec!["median_tpot_ms".into(), "output_throughput".into()],
+            ratio_metrics: vec!["median_tpot_ms".into(), "output_throughput".into()],
+            ..ExportOptions::default()
+        };
+        let text = comparison_markdown(&table, &options);
+        let lines: Vec<&str> = text.lines().collect();
+
+        assert_eq!(lines[0], "**A** — MI355X");
+        assert_eq!(lines[1], "**B** — B200");
+        assert_eq!(lines[2], "");
+
+        let header = lines[3];
+        assert!(header.starts_with("| ISL | OSL | conc |"));
+        assert!(header.contains("A TPOT (ms)"));
+        assert!(header.contains("B Output tok/s"));
+        assert!(header.contains("A/B TPOT (ms)"));
+        assert!(header.contains("A/B Output tok/s"));
+        // Only the two selected metrics, on each side, plus their two ratios.
+        assert_eq!(header.matches('|').count(), 3 + 2 + 2 + 2 + 1);
+
+        assert_eq!(
+            lines[4],
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        );
+        // A has double B's throughput at every concurrency.
+        assert!(lines[5].contains("200.0%"));
+        assert_eq!(lines.len(), 7); // labels, blank, header, rule, two rows
+    }
+
+    #[test]
+    fn markdown_of_a_single_side_has_no_b_columns_or_ratios() {
+        let a = side("Solo", vec![child(4, 200.0)]);
+        let table = table_of(&a, None, &[]);
+
+        let text = comparison_markdown(&table, &ExportOptions::default());
+
+        assert!(!text.contains("**B**"));
+        assert!(!text.contains("A/B"));
+        assert!(!text.contains("| B "));
+    }
+
+    // Numbers right, free text left. Getting this wrong is invisible in the raw
+    // markdown and only shows up once a forge renders the table.
+    #[test]
+    fn markdown_left_aligns_comparison_fields_and_right_aligns_numbers() {
+        let a = side("MI355X", vec![child(4, 200.0)]);
+        let b = side("B200", vec![child(4, 100.0)]);
+        let table = table_of(&a, Some(&b), &["tensor_parallel_size".to_string()]);
+
+        let text = comparison_markdown(&table, &ExportOptions::default());
+        let alignment = text.lines().nth(4).unwrap();
+        let cells: Vec<&str> = alignment
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
+
+        // ISL, OSL, conc, then each side's field column, its six metrics, then
+        // the two default ratio columns.
+        let mut expected = vec!["---:"; 3];
+        for _ in 0..2 {
+            expected.push(":---");
+            expected.extend(std::iter::repeat("---:").take(6));
+        }
+        expected.extend(["---:", "---:"]);
+
+        assert_eq!(cells, expected);
+        assert_eq!(
+            alignment.matches(":---").count(),
+            2,
+            "only the two comparison-field columns should be left-aligned"
+        );
+    }
+
+    #[test]
+    fn markdown_escapes_a_pipe_in_a_label() {
+        let a = side("left | right", vec![child(4, 200.0)]);
+        let table = table_of(&a, None, &[]);
+
+        let text = comparison_markdown(&table, &ExportOptions::default());
+        assert!(text.contains("**A** — left \\| right"));
     }
 }
