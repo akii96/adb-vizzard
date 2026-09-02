@@ -5,7 +5,8 @@
 //   node scripts/gen-icons.mjs
 
 import { deflateSync } from "node:zlib";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -182,3 +183,32 @@ for (const [name, size] of Object.entries(outputs)) {
 const ico = buildIco([16, 32, 48, 64, 128, 256].map((size) => ({ size, data: pngFor(size) })));
 writeFileSync(join(OUT_DIR, "icon.ico"), ico);
 console.log(`wrote icons/icon.ico (${ico.length} bytes)`);
+
+// macOS: build icon.icns from the rendered PNGs using sips + iconutil (both macOS built-ins).
+if (process.platform === "darwin") {
+  const iconsetDir = join(OUT_DIR, "icon.iconset");
+  mkdirSync(iconsetDir, { recursive: true });
+
+  // Each entry: [logical size, scale, filename used by iconutil convention]
+  const icnsEntries = [
+    [16, 1, "icon_16x16.png"],
+    [16, 2, "icon_16x16@2x.png"],
+    [32, 1, "icon_32x32.png"],
+    [32, 2, "icon_32x32@2x.png"],
+    [128, 1, "icon_128x128.png"],
+    [128, 2, "icon_128x128@2x.png"],
+    [256, 1, "icon_256x256.png"],
+    [256, 2, "icon_256x256@2x.png"],
+    [512, 1, "icon_512x512.png"],
+    [512, 2, "icon_512x512@2x.png"],
+  ];
+
+  for (const [logical, scale, name] of icnsEntries) {
+    writeFileSync(join(iconsetDir, name), pngFor(logical * scale));
+  }
+
+  const icnsPath = join(OUT_DIR, "icon.icns");
+  execSync(`iconutil -c icns "${iconsetDir}" -o "${icnsPath}"`);
+  console.log(`wrote icons/icon.icns`);
+  rmSync(iconsetDir, { recursive: true });
+}
