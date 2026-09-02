@@ -2,21 +2,28 @@
 
 ## Setup
 
-Needs Node 18+ and Rust stable. On Windows you also need the MSVC build tools for
-the linker:
+Needs Node 18+ and Rust stable.
+
+**macOS**
+
+```bash
+# Install Rust (one-time)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+
+npm install
+npm run icons        # generates src-tauri/icons (including icon.icns on macOS)
+npm run tauri dev
+```
+
+**Windows** — you also need the MSVC build tools for the linker:
 
 ```powershell
 winget install Rustlang.Rustup
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-Then:
-
-```bash
-npm install
-npm run icons        # generates src-tauri/icons
-npm run tauri dev
-```
+Then the same three commands above.
 
 ## Before a PR
 
