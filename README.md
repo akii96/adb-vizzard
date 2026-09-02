@@ -9,13 +9,29 @@ CSV/XLSX exports — no `adb-pull` / `adb-summarize` round trip.
 Download from the [latest release](../../releases/latest) and run it. **Nothing
 needs installing first** — no Python, Node, or Rust.
 
-| Download | Use it when |
-|---|---|
-| `ADB Vizzard_*_x64-setup.exe` | Normal case. Installs per-user, **no admin rights needed**. |
-| `ADB Vizzard_*_x64_en-US.msi` | IT-managed, per-machine rollout. |
-| `ADB Vizzard_*_x64_portable.zip` | No install at all — unzip and run. |
+| Download | Platform | Use it when |
+|---|---|---|
+| `ADB Vizzard_*_x64-setup.exe` | Windows | Normal case. Installs per-user, **no admin rights needed**. |
+| `ADB Vizzard_*_x64_en-US.msi` | Windows | IT-managed, per-machine rollout. |
+| `ADB Vizzard_*_x64_portable.zip` | Windows | No install at all — unzip and run. |
+| `ADB Vizzard_*_universal.dmg` | macOS | Intel or Apple Silicon, one download for both. See below. |
 
 Sharing with a colleague is just sending them one of these files.
+
+### First run on macOS
+
+The `.dmg` is **unsigned and not notarised**, so Gatekeeper blocks it the first
+time — usually with *"ADB Vizzard is damaged and can't be opened"*, which is
+misleading: the download is fine, it is just missing a signature. Drag the app to
+*Applications*, then clear the quarantine flag:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/ADB Vizzard.app"
+```
+
+Alternatively, launch it once and then allow it under *System Settings → Privacy
+& Security → Open Anyway*. On macOS 15 and later this is the only route through
+the UI; right-click → *Open* no longer works.
 
 ## Using it
 
@@ -51,6 +67,8 @@ are auto-derived and editable before export.
 | `Ctrl+L` / `Ctrl+R` | Focus the left / right run field |
 | `Enter` | Load that side |
 
+On macOS these are `Ctrl`, not `Cmd`.
+
 ### Without credentials
 
 *Open a local pull folder* reads an existing `exp_pull_*` directory — useful if
@@ -65,19 +83,22 @@ compare two pulls.
 Your token is masked in the UI and only shown if you click the eye icon. It is
 kept out of error messages and cleared when you disconnect.
 
-If you tick *Remember me*, the token is saved **in plain text** to a settings file
-under `%APPDATA%`; the exact path is shown in Settings. Anything running as your
-Windows user could read it. It is off by default, and *Settings → Forget* clears
-it. If your settings folder is inside OneDrive or similar, only the host is saved.
+If you tick *Remember me*, the token is saved **in plain text** to a settings
+file — under `%APPDATA%` on Windows, `~/Library/Application Support` on macOS.
+The exact path is shown in Settings. Anything running as your user account could
+read it, though on macOS the file is created mode `0600`. It is off by default,
+and *Settings → Forget* clears it. If your settings folder is inside OneDrive,
+Dropbox, Google Drive or Box, only the host is saved.
 
 Benchmark data is held in memory while the app is open and never written to disk,
 so reopening a run is fast and nothing lingers afterwards.
 
 ## If something goes wrong
 
-**Can't reach the host.** TLS trust comes from the Windows certificate store, so
-networks that inspect TLS work without setup. If the same URL loads in Edge but
-not here, the error message will say whether it looks like a certificate problem.
+**Can't reach the host.** TLS trust comes from the OS certificate store —
+Schannel on Windows, Keychain on macOS — so networks that inspect TLS work
+without setup. If the same URL loads in your browser but not here, the error
+message will say whether it looks like a certificate problem.
 
 **A run loads with some cases missing.** Cases that could not be read are listed
 under the run with the reason. The rest still load.

@@ -19,8 +19,30 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  build:
+  # Tauri bundles for the host OS only, so each platform needs its own runner.
+  # The version check is split out so a mistyped tag fails in seconds rather
+  # than after both builds have compiled.
+  check:
+    name: Check the tag matches the app version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare tag with tauri.conf.json
+        run: |
+          ref="${{ github.ref_name }}"
+          tagVersion="${ref#v}"
+          tagVersion="${tagVersion%%-*}"
+          appVersion=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "tag=$ref  numeric tag version=$tagVersion  tauri.conf.json=$appVersion"
+          if [[ "$ref" == v* && "$tagVersion" != "$appVersion" ]]; then
+            echo "::error::Tag $ref does not match version $appVersion in src-tauri/tauri.conf.json"
+            exit 1
+          fi
+
+  windows:
     name: Build Windows installers
+    needs: check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,17 +60,6 @@ jobs:
           workspaces: src-tauri
 
       - run: npm ci
-
-      - name: Check the tag matches the app version
-        shell: pwsh
-        run: |
-          $ref = "${{ github.ref_name }}"
-          $tagVersion = ($ref -replace '^v', '') -replace '-.*$', ''
-          $appVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          Write-Host "tag=$ref  numeric tag version=$tagVersion  tauri.conf.json=$appVersion"
-          if ($ref -like 'v*' -and $tagVersion -ne $appVersion) {
-            throw "Tag $ref does not match version $appVersion in src-tauri/tauri.conf.json"
-          }
 
       - name: Test before shipping
         run: cargo test --manifest-path src-tauri/Cargo.toml
@@ -87,8 +98,77 @@ jobs:
           name: windows-installers
           path: artifacts/*
 
+  macos:
+    name: Build macOS disk image
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both halves are needed for a universal binary. The runner is Apple
+          # Silicon, so a host-only build would produce a .dmg that refuses to
+          # launch on Intel Macs.
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Test before shipping
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Generate icons
+        # icons/icon.icns is committed because this is the only job that can
+        # regenerate it: the generator shells out to sips and iconutil, both
+        # macOS-only. Everywhere else the committed file is used as-is.
+        run: npm run icons
+
+      - name: Build the app bundle
+        run: npx tauri build --target universal-apple-darwin
+
+      - name: Stage release artifacts
+        run: |
+          mkdir -p artifacts
+          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg artifacts/
+          ls -lh artifacts
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: artifacts/*
+
+  publish:
+    name: Publish release
+    needs: [windows, macos]
+    # The macOS bundle is new and unsigned. If it breaks, the Windows installers
+    # people actually depend on should still ship, so this gates on the Windows
+    # job alone and publishes whichever artifacts were produced.
+    if: |
+      always()
+      && needs.windows.result == 'success'
+      && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List what will be published
+        run: ls -lh artifacts
+
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
@@ -101,11 +181,29 @@ jobs:
 
             Pick one:
 
+            **Windows**
+
             - **`ADB Vizzard_*_x64-setup.exe`** — recommended. Installs for the current
               user under `%LOCALAPPDATA%` and needs **no administrator rights**.
             - **`ADB Vizzard_*_x64_en-US.msi`** — per-machine, for IT-managed rollout.
             - **`ADB Vizzard_*_x64_portable.zip`** — no install at all; unzip and run
               `adb-vizzard.exe`.
 
-            No Python, Node or Rust needed to run any of these. WebView2 ships with
-            Windows 10/11, and the installers carry its bootstrapper as a fallback.
+            **macOS**
+
+            - **`ADB Vizzard_*_universal.dmg`** — one download for both Intel and Apple
+              Silicon. Open it and drag the app to *Applications*.
+
+              This build is **unsigned and not notarised**, so Gatekeeper blocks it the
+              first time. Clearing the quarantine flag is the reliable fix:
+
+              ```
+              xattr -dr com.apple.quarantine "/Applications/ADB Vizzard.app"
+              ```
+
+              Alternatively, launch it once, then allow it under
+              *System Settings → Privacy & Security → Open Anyway*.
+
+            No Python, Node or Rust needed to run any of these. On Windows, WebView2
+            ships with Windows 10/11 and the installers carry its bootstrapper as a
+            fallback; on macOS the system WebKit is used.
